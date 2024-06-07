@@ -2802,6 +2802,87 @@ class ConfidenceHead(Module):
 
         return ConfidenceHeadLogits(pae_logits, pde_logits, plddt_logits, resolved_logits)
 
+@torch.no_grad()
+def compute_pae_labels(pred_coords: Float['b n 3'], 
+                       true_coords: Float['b n 3'],
+                       pred_frames: Float['b n 3 3'],
+                       true_frames: Float['b n 3 3'],
+                       frame_mask: bool['b n'] | None = None,
+                       ignore_index = -100,
+                       dist_bins=torch.linspace(0.5, 32, 64)):
+    pae_dist_fn = ComputeAlignmentError()
+    pae_dist = pae_dist_fn(pred_coords, true_coords, pred_frames, true_frames)
+    pae_dist_from_dist_bins = einx.subtract('b m dist, dist_bins -> b m dist dist_bins', pae_dist, dist_bins.to(pred_coords.device)).abs()
+    pae_labels = pae_dist_from_dist_bins.argmin(dim = -1)
+    pae_frame_mask = einx.logical_or('b m, b n -> b m n', frame_mask, frame_mask)
+    pae_labels = torch.where(pae_frame_mask, pae_labels, ignore_index)
+    return pae_labels
+
+@torch.no_grad()
+def compute_pde_labels(pred_coords: Float['b n 3'], 
+                       true_coords: Float['b n 3'],
+                       dist_bins=torch.linspace(0.5, 32, 64)):
+    molecule_dist = torch.cdist(true_coords, true_coords, p = 2)
+    pred_dist = torch.cdist(pred_coords, pred_coords, p = 2)
+    diff_dist = (molecule_dist-pred_dist).abs()
+    pde_dist_from_dist_bins = einx.subtract('b m dist, dist_bins -> b m dist dist_bins', diff_dist, dist_bins.to(pred_coords.device)).abs()
+    pde_labels = pde_dist_from_dist_bins.argmin(dim = -1)
+    return pde_labels
+
+
+@torch.no_grad
+def compute_plddt_labels(pred_coords: Float['b n 3'], 
+                        true_coords: Float['b n 3'],
+                        is_dna: bool['b n'],
+                        is_rna: bool['b n'],
+                        coords_mask: Bool['b n'] | None = None,
+                        nucleic_acid_cutoff: float = 30.0,
+                        other_cutoff: float = 15.0,
+                        dist_bins: List[float] = torch.linspace(0.02, 1, 50).float().tolist()):
+    # Compute distances between all pairs of atoms
+    pred_dists = torch.cdist(pred_coords, pred_coords)
+    true_dists = torch.cdist(true_coords, true_coords)
+
+    # Compute distance difference for all pairs of atoms
+    dist_diff = torch.abs(true_dists - pred_dists)
+
+    # Compute epsilon values
+    eps = (
+        (dist_diff<=0.5) +
+        (dist_diff<=1.0) +
+        (dist_diff<=2.0) +
+        (dist_diff<=4.0)
+    ) / 4.0
+
+    # Restrict to bespoke inclusion radius
+    is_nucleotide = is_dna | is_rna
+    is_nucleotide_pair = einx.logical_and('b i, b j -> b i j', is_nucleotide, is_nucleotide)
+
+    inclusion_radius = torch.where(
+        is_nucleotide_pair,
+        true_dists < nucleic_acid_cutoff,
+        true_dists < other_cutoff
+    )
+
+    # Compute mean, avoiding self term
+    mask = inclusion_radius & ~torch.eye(pred_coords.shape[1], dtype=torch.bool, device=pred_coords.device)
+
+    # Take into account variable lengthed atoms in batch
+    if exists(coords_mask):
+        paired_coords_mask = einx.logical_and('b i, b j -> b i j', coords_mask, coords_mask)
+        mask = mask & paired_coords_mask
+
+    # Calculate masked averaging
+    lddt_sum = (eps * mask).sum(dim=(-1, -2))
+    lddt_count = mask.sum(dim=(-1, -2))
+    lddt = lddt_sum / lddt_count.clamp(min=1)
+    
+    dist_bins_pt = torch.tensor(dist_bins, device=pred_coords.device)
+    dist_from_dist_bins = einx.subtract('b m dist, dist_bins -> b m dist dist_bins', lddt, dist_bins_pt).abs()
+    lddt_labels = dist_from_dist_bins.argmin(dim = -1)
+    return lddt_labels
+
+
 # main class
 
 class LossBreakdown(NamedTuple):
@@ -3150,6 +3231,8 @@ class Alphafold3(Module):
         return_loss_breakdown = False,
         return_loss_if_possible: bool = True,
         num_rollout_steps: int = 20,
+        frame_indices: Float['b n 3'] | None=None,
+        frame_mask: bool['b n'] | None=None
     ) -> Float['b m 3'] | Float[''] | Tuple[Float[''], LossBreakdown]:
 
         atom_seq_len = atom_inputs.shape[-2]
@@ -3466,17 +3549,25 @@ class Alphafold3(Module):
                 return_pae_logits = return_pae_logits
             )
 
-            if exists(pae_labels):
-                pae_labels = torch.where(pairwise_mask, pae_labels, ignore)
-                pae_loss = F.cross_entropy(logits.pae, pae_labels, ignore_index = ignore)
+            molecule_pos = einx.get_at('b [m] c, b n -> b n c', atom_pos, molecule_atom_indices)
+            conf_head_dist_bins = torch.linspace(0.5, 32, 64, device=pred_atom_pos.device).float()
 
-            if exists(pde_labels):
-                pde_labels = torch.where(pairwise_mask, pde_labels, ignore)
-                pde_loss = F.cross_entropy(logits.pde, pde_labels, ignore_index = ignore)
+            pred_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', pred_atom_pos, frame_indices)
+            gt_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', atom_pos, frame_indices)
+            pae_labels =  compute_pae_labels(pred_atom_pos, molecule_pos, pred_frame_atoms, gt_frame_atoms, frame_mask, ignore, conf_head_dist_bins)
 
-            if exists(plddt_labels):
-                plddt_labels = torch.where(mask, plddt_labels, ignore)
-                plddt_loss = F.cross_entropy(logits.plddt, plddt_labels, ignore_index = ignore)
+            pae_labels = torch.where(pairwise_mask, pae_labels, ignore)
+            pae_loss = F.cross_entropy(logits.pae, pae_labels, ignore_index = ignore)
+
+
+            pde_labels = compute_pde_labels(pred_atom_pos, molecule_pos, conf_head_dist_bins)
+            pde_labels = torch.where(pairwise_mask, pde_labels, ignore)
+            pde_loss = F.cross_entropy(logits.pde, pde_labels, ignore_index = ignore)
+
+            is_dna, is_rna, _ = additional_molecule_feats[-3:]
+            plddt_labels = compute_plddt_labels(pred_atom_pos, molecule_pos, is_dna, is_rna)
+            plddt_labels = torch.where(mask, plddt_labels, ignore)
+            plddt_loss = F.cross_entropy(logits.plddt, plddt_labels, ignore_index = ignore)
 
             if exists(resolved_labels):
                 resolved_labels = torch.where(mask, resolved_labels, ignore)
