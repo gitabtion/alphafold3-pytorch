@@ -29,7 +29,10 @@ from alphafold3_pytorch.alphafold3 import (
     InputFeatureEmbedder,
     ConfidenceHead,
     DistogramHead,
-    Alphafold3
+    Alphafold3,
+    compute_pae_labels,
+    compute_pde_labels,
+    compute_plddt_labels
 )
 
 from alphafold3_pytorch.inputs import (

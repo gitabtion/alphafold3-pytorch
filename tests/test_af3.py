@@ -22,7 +22,10 @@ from alphafold3_pytorch import (
     InputFeatureEmbedder,
     ConfidenceHead,
     DistogramHead,
-    Alphafold3
+    Alphafold3,
+    compute_pae_labels,
+    compute_pde_labels,
+    compute_plddt_labels
 )
 
 from alphafold3_pytorch.configs import (
@@ -405,6 +408,45 @@ def test_distogram_head():
     distogram_head = DistogramHead(dim_pairwise = 128)
 
     logits = distogram_head(pairwise_repr)
+
+def test_compute_pae_labels():
+    true_coords = torch.rand(2, 16, 3)
+    pred_coords = torch.rand(2, 16, 3)
+    true_frames = torch.rand(2, 16, 3, 3)
+    pred_frames = torch.rand(2, 16, 3, 3)
+    
+    labels = compute_pae_labels(
+        true_coords=true_coords,
+        pred_coords=pred_coords,
+        true_frames=true_frames,
+        pred_frames=pred_frames
+    )
+    
+    assert labels.shape == (2, 16)
+    
+def test_compute_pde_labels():
+    true_coords = torch.rand(2, 16, 3)
+    pred_coords = torch.rand(2, 16, 3)
+    labels = compute_pde_labels(
+        true_coords=true_coords,
+        pred_coords=pred_coords
+    )
+    assert labels.shape == (2, 16, 16)
+    
+def test_compute_plddt_labels():
+    true_coords = torch.rand(2, 16, 3)
+    pred_coords = torch.rand(2, 16, 3)
+    is_dna = torch.randint(0, 2, (2, 16)).bool()
+    is_rna = ~is_dna
+    is_dna[:, -4:] = False
+    is_rna[:, -4:] = False
+    labels = compute_plddt_labels(
+        pred_coords=pred_coords,
+        true_coords=true_coords,
+        is_dna=is_dna,
+        is_rna=is_rna
+    )
+    assert labels.shape == (2, 16)
 
 @pytest.mark.parametrize('window_atompair_inputs', (True, False))
 @pytest.mark.parametrize('stochastic_frame_average', (True, False))

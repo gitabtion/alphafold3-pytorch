@@ -2819,20 +2819,20 @@ def compute_pae_labels(pred_coords: Float['b n 3'],
                        pred_frames: Float['b n 3 3'],
                        true_frames: Float['b n 3 3'],
                        frame_mask: bool['b n'] | None = None,
-                       ignore_index = -100,
-                       dist_bins=torch.linspace(0.5, 32, 64)):
+                       ignore_index: int = -100,
+                       dist_bins=torch.linspace(0.5, 32, 64)) -> Float['b n']:
     pae_dist_fn = ComputeAlignmentError()
     pae_dist = pae_dist_fn(pred_coords, true_coords, pred_frames, true_frames)
-    pae_dist_from_dist_bins = einx.subtract('b m dist, dist_bins -> b m dist dist_bins', pae_dist, dist_bins.to(pred_coords.device)).abs()
+    pae_dist_from_dist_bins = einx.subtract('b m, dist_bins -> b m dist_bins', pae_dist, dist_bins.to(pred_coords.device)).abs()
     pae_labels = pae_dist_from_dist_bins.argmin(dim = -1)
-    pae_frame_mask = einx.logical_or('b m, b n -> b m n', frame_mask, frame_mask)
-    pae_labels = torch.where(pae_frame_mask, pae_labels, ignore_index)
+    if frame_mask is not None:
+        pae_labels = torch.where(frame_mask, pae_labels, ignore_index)
     return pae_labels
 
 @torch.no_grad()
 def compute_pde_labels(pred_coords: Float['b n 3'], 
                        true_coords: Float['b n 3'],
-                       dist_bins=torch.linspace(0.5, 32, 64)):
+                       dist_bins=torch.linspace(0.5, 32, 64)) -> Float['b n n']:
     molecule_dist = torch.cdist(true_coords, true_coords, p = 2)
     pred_dist = torch.cdist(pred_coords, pred_coords, p = 2)
     diff_dist = (molecule_dist-pred_dist).abs()
@@ -2849,7 +2849,7 @@ def compute_plddt_labels(pred_coords: Float['b n 3'],
                         coords_mask: Bool['b n'] | None = None,
                         nucleic_acid_cutoff: float = 30.0,
                         other_cutoff: float = 15.0,
-                        dist_bins: List[float] = torch.linspace(0.02, 1, 50).float().tolist()):
+                        dist_bins: List[float] = torch.linspace(0.02, 1, 50).float().tolist()) -> Float['b n']:
     # Compute distances between all pairs of atoms
     pred_dists = torch.cdist(pred_coords, pred_coords)
     true_dists = torch.cdist(true_coords, true_coords)
@@ -2884,12 +2884,12 @@ def compute_plddt_labels(pred_coords: Float['b n 3'],
         mask = mask & paired_coords_mask
 
     # Calculate masked averaging
-    lddt_sum = (eps * mask).sum(dim=(-1, -2))
-    lddt_count = mask.sum(dim=(-1, -2))
+    lddt_sum = (eps * mask).sum(dim=-1)
+    lddt_count = mask.sum(dim=-1)
     lddt = lddt_sum / lddt_count.clamp(min=1)
     
     dist_bins_pt = torch.tensor(dist_bins, device=pred_coords.device)
-    dist_from_dist_bins = einx.subtract('b m dist, dist_bins -> b m dist dist_bins', lddt, dist_bins_pt).abs()
+    dist_from_dist_bins = einx.subtract('b m, dist_bins -> b m dist_bins', lddt, dist_bins_pt).abs()
     lddt_labels = dist_from_dist_bins.argmin(dim = -1)
     return lddt_labels
 
@@ -3264,7 +3264,7 @@ class Alphafold3(Module):
         num_rollout_steps: int = 20,
         rollout_show_tqdm_pbar: bool = False,
         frame_indices: Float['b n 3'] | None=None,
-        frame_mask: bool['b n'] | None=None
+        frame_mask: Bool['b n'] | None=None
     ) -> Float['b m 3'] | Float[''] | Tuple[Float[''], LossBreakdown]:
 
         atom_seq_len = atom_inputs.shape[-2]
@@ -3618,11 +3618,12 @@ class Alphafold3(Module):
             conf_head_dist_bins = torch.linspace(0.5, 32, 64, device=pred_atom_pos.device).float()
 
             # calculate pae labels
-            pred_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', pred_atom_pos, frame_indices)
-            gt_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', atom_pos, frame_indices)
-            pae_labels =  compute_pae_labels(pred_atom_pos, molecule_pos, pred_frame_atoms, gt_frame_atoms, frame_mask, ignore, conf_head_dist_bins)
-            pae_labels = torch.where(pairwise_mask, pae_labels, ignore)
-            pae_loss = F.cross_entropy(logits.pae, pae_labels, ignore_index = ignore)
+            if frame_indices is not None:
+                pred_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', pred_atom_pos, frame_indices)
+                gt_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', atom_pos, frame_indices)
+                pae_labels =  compute_pae_labels(pred_atom_pos, molecule_pos, pred_frame_atoms, gt_frame_atoms, frame_mask, ignore, conf_head_dist_bins)
+                pae_labels = torch.where(pairwise_mask, pae_labels, ignore)
+                pae_loss = F.cross_entropy(logits.pae, pae_labels, ignore_index = ignore)
 
             # calculate pde labels
             pde_labels = compute_pde_labels(pred_atom_pos, molecule_pos, conf_head_dist_bins)
@@ -3630,8 +3631,8 @@ class Alphafold3(Module):
             pde_loss = F.cross_entropy(logits.pde, pde_labels, ignore_index = ignore)
 
             # calculate plddt labels
-            is_dna, is_rna, _ = additional_molecule_feats[-3:]
-            plddt_labels = compute_plddt_labels(pred_atom_pos, molecule_pos, is_dna, is_rna)
+            is_dna, is_rna, _ = additional_molecule_feats[..., -3:].unbind(dim = -1)
+            plddt_labels = compute_plddt_labels(pred_atom_pos, molecule_pos, is_dna.bool(), is_rna.bool())
             plddt_labels = torch.where(mask, plddt_labels, ignore)
             plddt_loss = F.cross_entropy(logits.plddt, plddt_labels, ignore_index = ignore)
 
