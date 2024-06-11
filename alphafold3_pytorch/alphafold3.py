@@ -101,20 +101,27 @@ def exists(v):
 def default(v, d):
     return v if exists(v) else d
 
+def identity(x, *args, **kwargs):
+    return x
+
 def log(t, eps = 1e-20):
     return torch.log(t.clamp(min = eps))
 
-def max_neg_value(t: Tensor):
-    return -torch.finfo(t.dtype).max
-
 def divisible_by(num, den):
     return (num % den) == 0
+
+# tensor helpers
+
+def max_neg_value(t: Tensor):
+    return -torch.finfo(t.dtype).max
 
 def pack_one(t, pattern):
     return pack([t], pattern)
 
 def unpack_one(t, ps, pattern):
     return unpack(t, ps, pattern)[0]
+
+# decorators
 
 def maybe(fn):
     @wraps(fn)
@@ -2039,6 +2046,8 @@ class ElucidatedAtomDiffusion(Module):
         atom_mask: Bool['b m'] | None = None,
         num_sample_steps = None,
         clamp = False,
+        use_tqdm_pbar = True,
+        tqdm_pbar_title = 'sampling time step',
         **network_condition_kwargs
     ):
         num_sample_steps = default(num_sample_steps, self.num_sample_steps)
@@ -2067,7 +2076,9 @@ class ElucidatedAtomDiffusion(Module):
 
         # gradually denoise
 
-        for sigma, sigma_next, gamma in tqdm(sigmas_and_gammas, desc = 'sampling time step'):
+        maybe_tqdm_wrapper = tqdm if use_tqdm_pbar else identity
+
+        for sigma, sigma_next, gamma in maybe_tqdm_wrapper(sigmas_and_gammas, desc = tqdm_pbar_title):
             sigma, sigma_next, gamma = map(lambda t: t.item(), (sigma, sigma_next, gamma))
 
             eps = self.S_noise * torch.randn(shape, device = self.device) # stochastic sampling
@@ -2917,6 +2928,8 @@ class Alphafold3(Module):
         dim_single = 384,
         dim_pairwise = 128,
         dim_token = 768,
+        num_atom_embeds: int | None = None,
+        num_atompair_embeds: int | None = None,
         distance_bins: List[float] = torch.linspace(3, 20, 38).float().tolist(),
         ignore_index = -1,
         num_dist_bins: int | None = None,
@@ -2994,6 +3007,20 @@ class Alphafold3(Module):
         stochastic_frame_average = False
     ):
         super().__init__()
+
+        # optional atom and atom bond embeddings
+
+        has_atom_embeds = exists(num_atom_embeds)
+        has_atompair_embeds = exists(num_atompair_embeds)
+
+        if has_atom_embeds:
+            self.atom_embeds = nn.Embedding(num_atom_embeds, dim_atom)
+
+        if has_atompair_embeds:
+            self.atompair_embeds = nn.Embedding(num_atompair_embeds, dim_atompair)
+
+        self.has_atom_embeds = has_atom_embeds
+        self.has_atompair_embeds = has_atompair_embeds
 
         # atoms per window
 
@@ -3185,6 +3212,8 @@ class Alphafold3(Module):
 
         self.load_state_dict(model_package['state_dict'], strict = strict)
 
+        return package.get('id', None)
+
     @staticmethod
     @typecheck
     def init_and_load(path: str | Path):
@@ -3211,6 +3240,8 @@ class Alphafold3(Module):
         atompair_inputs: Float['b m m dapi'] | Float['b nw w1 w2 dapi'],
         additional_molecule_feats: Float[f'b n {ADDITIONAL_MOLECULE_FEATS}'],
         molecule_atom_lens: Int['b n'],
+        atom_ids: Int['b m'] | None = None,
+        atompair_ids: Int['b m m'] | Int['b nw w1 w2'] | None = None,
         atom_mask: Bool['b m'] | None = None,
         token_bond: Bool['b n n'] | None = None,
         msa: Float['b s n d'] | None = None,
@@ -3229,8 +3260,9 @@ class Alphafold3(Module):
         plddt_labels: Int['b n'] | None = None,
         resolved_labels: Int['b n'] | None = None,
         return_loss_breakdown = False,
-        return_loss_if_possible: bool = True,
+        return_loss: bool = None,
         num_rollout_steps: int = 20,
+        rollout_show_tqdm_pbar: bool = False
         frame_indices: Float['b n 3'] | None=None,
         frame_mask: bool['b n'] | None=None
     ) -> Float['b m 3'] | Float[''] | Tuple[Float[''], LossBreakdown]:
@@ -3285,6 +3317,23 @@ class Alphafold3(Module):
             additional_molecule_feats = additional_molecule_feats,
             molecule_atom_lens = molecule_atom_lens
         )
+
+        # handle maybe atom and atompair embeddings
+
+        assert not (exists(atom_ids) ^ self.has_atom_embeds), 'you either set `num_atom_embeds` and did not pass in `atom_ids` or vice versa'
+        assert not (exists(atompair_ids) ^ self.has_atompair_embeds), 'you either set `num_atompair_embeds` and did not pass in `atompair_ids` or vice versa'
+
+        if self.has_atom_embeds:
+            atom_embeds = self.atom_embeds(atom_ids)
+            atom_feats = atom_feats + atom_embeds
+
+        if self.has_atompair_embeds:
+            atompair_embeds = self.atompair_embeds(atompair_ids)
+
+            if atompair_embeds.ndim == 4:
+                atompair_embeds = full_pairwise_repr_to_windowed(atompair_embeds, window_size = self.atoms_per_window)
+
+            atompair_feats = atompair_feats + atompair_embeds
 
         # relative positional encoding
 
@@ -3386,11 +3435,15 @@ class Alphafold3(Module):
 
         has_labels = any([*map(exists, all_labels)])
 
-        return_loss = atom_pos_given or has_labels
+        can_return_loss = atom_pos_given or has_labels
+
+        # default whether to return loss by whether labels or atom positions are given
+
+        return_loss = default(return_loss, can_return_loss)
 
         # if neither atom positions or any labels are passed in, sample a structure and return
 
-        if not return_loss_if_possible or not return_loss:
+        if not return_loss:
             return self.edm.sample(
                 num_sample_steps = num_sample_steps,
                 atom_feats = atom_feats,
@@ -3403,6 +3456,16 @@ class Alphafold3(Module):
                 pairwise_rel_pos_feats = relative_position_encoding,
                 molecule_atom_lens = molecule_atom_lens
             )
+
+        # if being forced to return loss, but do not have sufficient information to return losses, just return 0
+
+        if return_loss and not can_return_loss:
+            zero = self.zero.requires_grad_()
+
+            if not return_loss_breakdown:
+                return zero
+
+            return zero, LossBreakdown(*((zero,) * 11))
 
         # losses default to 0
 
@@ -3535,7 +3598,9 @@ class Alphafold3(Module):
                 single_inputs_repr = single_inputs,
                 pairwise_trunk = pairwise,
                 pairwise_rel_pos_feats = relative_position_encoding,
-                molecule_atom_lens = molecule_atom_lens
+                molecule_atom_lens = molecule_atom_lens,
+                use_tqdm_pbar = rollout_show_tqdm_pbar,
+                tqdm_pbar_title = 'training rollout'
             )
 
             pred_atom_pos = einx.get_at('b [m] c, b n -> b n c', denoised_atom_pos, molecule_atom_indices)

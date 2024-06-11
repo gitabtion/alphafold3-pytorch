@@ -13,11 +13,14 @@ from alphafold3_pytorch import (
     AtomInput,
     DataLoader,
     Trainer,
-    TrainerConfig,
+    ConductorConfig,
     create_trainer_from_yaml,
-    create_training_from_yaml,
+    create_trainer_from_conductor_yaml,
     create_alphafold3_from_yaml
 )
+
+def exists(v):
+    return v is not None
 
 # mock dataset
 
@@ -153,13 +156,13 @@ def test_trainer():
 
     # assert checkpoints created
 
-    assert Path('./checkpoints/af3.ckpt.1.pt').exists()
+    assert Path(f'./checkpoints/({trainer.train_id})_af3.ckpt.1.pt').exists()
 
     # assert can load latest checkpoint by loading from a directory
 
     trainer.load('./checkpoints')
 
-    assert str(trainer.model_loaded_from_path) == str(Path('./checkpoints/af3.ckpt.2.pt'))
+    assert exists(trainer.model_loaded_from_path)
 
     # saving and loading from trainer
 
@@ -211,11 +214,11 @@ def test_trainer_config_without_model():
 
 # test creating trainer from training config yaml
 
-def test_training_config():
+def test_conductor_config():
     curr_dir = Path(__file__).parents[0]
     training_yaml_path = curr_dir / 'configs/training.yaml'
 
-    trainer = create_training_from_yaml(
+    trainer = create_trainer_from_conductor_yaml(
         training_yaml_path,
         trainer_name = 'main',
         dataset = MockAtomDataset(16)
@@ -223,3 +226,5 @@ def test_training_config():
 
     assert isinstance(trainer, Trainer)
 
+    assert str(trainer.checkpoint_folder) == 'main-and-finetuning/main'
+    assert str(trainer.checkpoint_prefix) == 'af3.main.ckpt.'

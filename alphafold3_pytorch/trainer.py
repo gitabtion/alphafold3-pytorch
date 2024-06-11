@@ -14,6 +14,11 @@ from alphafold3_pytorch.typing import (
     Int, Bool, Float
 )
 
+from alphafold3_pytorch.inputs import (
+    AtomInput,
+    INPUT_TO_ATOM_TRANSFORM
+)
+
 import torch
 from torch import Tensor
 from torch.optim import Adam, Optimizer
@@ -26,24 +31,7 @@ from ema_pytorch import EMA
 from lightning import Fabric
 from lightning.fabric.wrappers import _unwrap_objects
 
-# constants
-
-@typecheck
-class AtomInput(TypedDict):
-    atom_inputs:                Float['m dai']
-    molecule_atom_lens:         Int[' n']
-    atompair_inputs:            Float['m m dapi'] | Float['nw w (w*2) dapi']
-    additional_molecule_feats:  Float['n 10']
-    templates:                  Float['t n n dt']
-    msa:                        Float['s n dm']
-    template_mask:              Bool[' t'] | None
-    msa_mask:                   Bool[' s'] | None
-    atom_pos:                   Float['m 3'] | None
-    molecule_atom_indices:      Int[' n'] | None
-    distance_labels:            Int['n n'] | None
-    pae_labels:                 Int['n n'] | None
-    pde_labels:                 Int[' n'] | None
-    resolved_labels:            Int[' n'] | None
+from shortuuid import uuid
 
 # helpers
 
@@ -84,23 +72,37 @@ def collate_af3_inputs(
     inputs: List,
     int_pad_value = -1,
     map_input_fn: Callable | None = None
-):
+
+) -> AtomInput:
 
     if exists(map_input_fn):
         inputs = [map_input_fn(i) for i in inputs]
 
-    # make sure all inputs are AtomInput
+    # go through all the inputs
+    # and for any that is not AtomInput, try to transform it with the registered input type to corresponding registered function
 
-    assert all([beartype_isinstance(i, AtomInput) for i in inputs])
+    atom_inputs = []
+
+    for i in inputs:
+        if beartype_isinstance(i, AtomInput):
+            atom_inputs.append(i)
+            continue
+
+        maybe_to_atom_fn = INPUT_TO_ATOM_TRANSFORM.get(type(i), None)
+
+        if not exists(maybe_to_atom_fn):
+            raise TypeError(f'invalid input type {type(i)} being passed into Trainer that is not converted to AtomInput correctly')
+
+        atom_inputs.append(maybe_to_atom_fn(i))
 
     # separate input dictionary into keys and values
 
-    keys = inputs[0].keys()
-    inputs = [i.values() for i in inputs]
+    keys = atom_inputs[0].keys()
+    atom_inputs = [i.values() for i in atom_inputs]
 
     outputs = []
 
-    for grouped in zip(*inputs):
+    for grouped in zip(*atom_inputs):
         # if all None, just return None
 
         not_none_grouped = [*filter(exists, grouped)]
@@ -156,7 +158,8 @@ def collate_af3_inputs(
 
     # reconstitute dictionary
 
-    return dict(tuple(zip(keys, outputs)))
+    batched_atom_inputs = AtomInput(tuple(zip(keys, outputs)))
+    return batched_atom_inputs
 
 @typecheck
 def DataLoader(
@@ -321,13 +324,40 @@ class Trainer:
 
         # save the path for the last loaded model, if any
 
-        self.model_loaded_from_path = None
+        self.train_id = None
+
+        self.last_loaded_train_id = None
+        self.model_loaded_from_path: Path | None = None
 
     @property
     def is_main(self):
         return self.fabric.global_rank == 0
 
+    def generate_train_id(self):
+        if exists(self.train_id):
+            return
+
+        self.train_id = uuid()[:4].lower()
+
+    @property
+    def train_id_with_prev(self) -> str:
+        if not exists(self.last_loaded_train_id):
+            return self.train_id
+
+        ckpt_num = str(self.model_loaded_from_path).split('.')[-2]
+
+        return f'{self.last_loaded_train_id}.{ckpt_num}-{self.train_id}'
+
     # saving and loading
+
+    def save_checkpoint(self):
+        assert exists(self.train_id_with_prev)
+
+        # formulate checkpoint path and save
+
+        checkpoint_path = self.checkpoint_folder / f'({self.train_id_with_prev})_{self.checkpoint_prefix}{self.steps}.pt'
+
+        self.save(checkpoint_path, overwrite = self.overwrite_checkpoints)
 
     def save(
         self,
@@ -349,29 +379,37 @@ class Trainer:
             model = unwrapped_model.state_dict_with_init_args,
             optimizer = unwrapped_optimizer.state_dict(),
             scheduler = self.scheduler.state_dict(),
-            steps = self.steps
+            steps = self.steps,
+            id = self.train_id
         )
 
         torch.save(package, str(path))
+
+    def load_from_checkpoint_folder(
+        self,
+        **kwargs
+    ):
+        self.load(path = self.checkpoint_folder, **kwargs)
 
     def load(
         self,
         path: str | Path,
         strict = True,
         prefix = None,
-        only_model = False
+        only_model = False,
+        reset_steps = False
     ):
         if isinstance(path, str):
             path = Path(path)
 
-        assert path.exists()
+        assert path.exists(), f'{str(path)} cannot be found for loading'
 
         # if the path is a directory, then automatically load latest checkpoint
 
         if path.is_dir():
             prefix = default(prefix, self.checkpoint_prefix)
 
-            model_paths = [*path.glob(f'**/{prefix}*.pt')]
+            model_paths = [*path.glob(f'**/*_{prefix}*.pt')]
 
             assert len(model_paths) > 0, f'no files found in directory {path}'
 
@@ -379,18 +417,18 @@ class Trainer:
 
             path = model_paths[-1]
 
-        # for eventually saving entire training history in filename
-
-        self.model_loaded_from_path = path
-
         # get unwrapped model and optimizer
 
         unwrapped_model = _unwrap_objects(self.model)
-        unwrapped_optimizer = _unwrap_objects(self.optimizer)
 
         # load model from path
 
-        unwrapped_model.load(path)
+        model_id = unwrapped_model.load(path)
+
+        # for eventually saving entire training history in filename
+
+        self.model_loaded_from_path = path
+        self.last_loaded_train_id = model_id
 
         if only_model:
             return
@@ -399,13 +437,18 @@ class Trainer:
 
         package = torch.load(str(path))
 
+        unwrapped_optimizer = _unwrap_objects(self.optimizer)
+
         if 'optimizer' in package:
             unwrapped_optimizer.load_state_dict(package['optimizer'])
 
         if 'scheduler' in package:
             self.scheduler.load_state_dict(package['scheduler'])
 
-        self.steps = package.get('steps', 0)
+        if reset_steps:
+            self.steps = 0
+        else:
+            self.steps = package.get('steps', 0)
 
     # shortcut methods
 
@@ -423,6 +466,11 @@ class Trainer:
     def __call__(
         self
     ):
+
+        self.generate_train_id()
+
+        # cycle through dataloader
+
         dl = cycle(self.dataloader)
 
         # while less than required number of training steps
@@ -529,9 +577,7 @@ class Trainer:
             self.wait()
 
             if self.is_main and divisible_by(self.steps, self.checkpoint_every):
-                checkpoint_path = self.checkpoint_folder / f'{self.checkpoint_prefix}{self.steps}.pt'
-
-                self.save(checkpoint_path, overwrite = self.overwrite_checkpoints)
+                self.save_checkpoint()
 
             self.wait()
 
