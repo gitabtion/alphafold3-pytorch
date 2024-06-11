@@ -2834,7 +2834,7 @@ def compute_pae_labels(pred_coords: Float['b n 3'],
 @torch.no_grad()
 def compute_pde_labels(pred_coords: Float['b n 3'], 
                        true_coords: Float['b n 3'],
-                       dist_bins=torch.linspace(0.5, 32, 64)):
+                       dist_bins=torch.linspace(0.5, 32, 64)) -> Int['b n n']:
     molecule_dist = torch.cdist(true_coords, true_coords, p = 2)
     pred_dist = torch.cdist(pred_coords, pred_coords, p = 2)
     diff_dist = (molecule_dist-pred_dist).abs()
@@ -2851,7 +2851,7 @@ def compute_plddt_labels(pred_coords: Float['b n 3'],
                         coords_mask: Bool['b n'] | None = None,
                         nucleic_acid_cutoff: float = 30.0,
                         other_cutoff: float = 15.0,
-                        dist_bins: List[float] = torch.linspace(0.02, 1, 50).float().tolist()):
+                        dist_bins: List[float] = torch.linspace(0.02, 1, 50).float().tolist()) -> Int['b n']:
     # Compute distances between all pairs of atoms
     pred_dists = torch.cdist(pred_coords, pred_coords)
     true_dists = torch.cdist(true_coords, true_coords)
