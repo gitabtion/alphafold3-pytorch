@@ -168,7 +168,7 @@ class Attention(Module):
         num_memory_kv: int = 0,
         efficient_attn_config: Config = Config(True, True, True),
         mla = False,
-        mla_lora_rank = 8,
+        mla_rank = 64,
     ):
         super().__init__()
         """
@@ -201,13 +201,13 @@ class Attention(Module):
         if self.mla:
             
             self.to_q = nn.Sequential(
-                nn.Linear(dim, mla_lora_rank, bias=False),
-                nn.LayerNorm(mla_lora_rank),
-                nn.Linear(mla_lora_rank, dim_inner, bias=query_bias)
+                nn.Linear(dim, mla_rank, bias=False),
+                nn.LayerNorm(mla_rank),
+                nn.Linear(mla_rank, dim_inner, bias=query_bias)
             )
             self.to_kv = nn.Sequential(
-                nn.Linear(dim, mla_lora_rank, bias=False),
-                nn.Linear(mla_lora_rank, dim_inner*2, bias=False)
+                nn.Linear(dim, mla_rank, bias=False),
+                nn.Linear(mla_rank, dim_inner*2, bias=False)
             )
         else:
             self.to_q = nn.Linear(dim, dim_inner, bias = query_bias)
