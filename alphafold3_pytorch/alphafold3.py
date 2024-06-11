@@ -3262,7 +3262,7 @@ class Alphafold3(Module):
         return_loss_breakdown = False,
         return_loss: bool = None,
         num_rollout_steps: int = 20,
-        rollout_show_tqdm_pbar: bool = False
+        rollout_show_tqdm_pbar: bool = False,
         frame_indices: Float['b n 3'] | None=None,
         frame_mask: bool['b n'] | None=None
     ) -> Float['b m 3'] | Float[''] | Tuple[Float[''], LossBreakdown]:
