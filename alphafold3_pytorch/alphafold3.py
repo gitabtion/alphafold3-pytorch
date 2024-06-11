@@ -2813,14 +2813,15 @@ class ConfidenceHead(Module):
 
         return ConfidenceHeadLogits(pae_logits, pde_logits, plddt_logits, resolved_logits)
 
+@typecheck
 @torch.no_grad()
 def compute_pae_labels(pred_coords: Float['b n 3'], 
                        true_coords: Float['b n 3'],
                        pred_frames: Float['b n 3 3'],
                        true_frames: Float['b n 3 3'],
-                       frame_mask: bool['b n'] | None = None,
+                       frame_mask: Bool['b n'] | None = None,
                        ignore_index: int = -100,
-                       dist_bins=torch.linspace(0.5, 32, 64)) -> Float['b n']:
+                       dist_bins=torch.linspace(0.5, 32, 64)) -> Int['b n']:
     pae_dist_fn = ComputeAlignmentError()
     pae_dist = pae_dist_fn(pred_coords, true_coords, pred_frames, true_frames)
     pae_dist_from_dist_bins = einx.subtract('b m, dist_bins -> b m dist_bins', pae_dist, dist_bins.to(pred_coords.device)).abs()
@@ -2829,10 +2830,11 @@ def compute_pae_labels(pred_coords: Float['b n 3'],
         pae_labels = torch.where(frame_mask, pae_labels, ignore_index)
     return pae_labels
 
+@typecheck
 @torch.no_grad()
 def compute_pde_labels(pred_coords: Float['b n 3'], 
                        true_coords: Float['b n 3'],
-                       dist_bins=torch.linspace(0.5, 32, 64)) -> Float['b n n']:
+                       dist_bins=torch.linspace(0.5, 32, 64)):
     molecule_dist = torch.cdist(true_coords, true_coords, p = 2)
     pred_dist = torch.cdist(pred_coords, pred_coords, p = 2)
     diff_dist = (molecule_dist-pred_dist).abs()
@@ -2840,16 +2842,16 @@ def compute_pde_labels(pred_coords: Float['b n 3'],
     pde_labels = pde_dist_from_dist_bins.argmin(dim = -1)
     return pde_labels
 
-
+@typecheck
 @torch.no_grad
 def compute_plddt_labels(pred_coords: Float['b n 3'], 
                         true_coords: Float['b n 3'],
-                        is_dna: bool['b n'],
-                        is_rna: bool['b n'],
+                        is_dna: Bool['b n'],
+                        is_rna: Bool['b n'],
                         coords_mask: Bool['b n'] | None = None,
                         nucleic_acid_cutoff: float = 30.0,
                         other_cutoff: float = 15.0,
-                        dist_bins: List[float] = torch.linspace(0.02, 1, 50).float().tolist()) -> Float['b n']:
+                        dist_bins: List[float] = torch.linspace(0.02, 1, 50).float().tolist()):
     # Compute distances between all pairs of atoms
     pred_dists = torch.cdist(pred_coords, pred_coords)
     true_dists = torch.cdist(true_coords, true_coords)
