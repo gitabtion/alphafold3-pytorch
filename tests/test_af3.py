@@ -243,6 +243,24 @@ def test_sequence_local_attn():
 
     out = attn(atoms, attn_bias = attn_bias)
     assert out.shape == atoms.shape
+    
+@pytest.mark.parametrize('mla', (False, True))
+@pytest.mark.parametrize('flash', (False, True))
+def test_attention(mla, flash):
+    atoms = torch.randn(2, 17, 32)
+    attn_bias = torch.randn(2, 17, 17)
+
+    attn = Attention(
+        dim = 32,
+        dim_head = 16,
+        heads = 8,
+        window_size = 5,
+        mla=mla,
+        flash=flash
+    )
+
+    out = attn(atoms, attn_bias = attn_bias)
+    assert out.shape == atoms.shape
 
 def test_diffusion_module():
 

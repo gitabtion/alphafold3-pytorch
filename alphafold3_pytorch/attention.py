@@ -166,7 +166,9 @@ class Attention(Module):
         flash = True,
         window_size = None,
         num_memory_kv: int = 0,
-        efficient_attn_config: Config = Config(True, True, True)
+        efficient_attn_config: Config = Config(True, True, True),
+        mla = False,
+        mla_lora_rank = 8,
     ):
         super().__init__()
         """
@@ -194,8 +196,23 @@ class Attention(Module):
         self.split_heads = Rearrange('b n (h d) -> b h n d', h = heads)
         self.merge_heads = Rearrange('b h n d -> b n (h d)')
 
-        self.to_q = nn.Linear(dim, dim_inner, bias = query_bias)
-        self.to_kv = nn.Linear(dim, dim_inner * 2, bias = False)
+        self.mla = mla
+
+        if self.mla:
+            
+            self.to_q = nn.Sequential(
+                nn.Linear(dim, mla_lora_rank, bias=False),
+                nn.LayerNorm(mla_lora_rank),
+                nn.Linear(mla_lora_rank, dim_inner, bias=query_bias)
+            )
+            self.to_kv = nn.Sequential(
+                nn.Linear(dim, mla_lora_rank, bias=False),
+                nn.Linear(mla_lora_rank, dim_inner*2, bias=False)
+            )
+        else:
+            self.to_q = nn.Linear(dim, dim_inner, bias = query_bias)
+            self.to_kv = nn.Linear(dim, dim_inner * 2, bias = False)
+
         self.to_out = nn.Linear(dim_inner, dim, bias = False)
 
         self.memory_kv = None
