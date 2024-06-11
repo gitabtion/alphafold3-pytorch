@@ -3552,18 +3552,19 @@ class Alphafold3(Module):
             molecule_pos = einx.get_at('b [m] c, b n -> b n c', atom_pos, molecule_atom_indices)
             conf_head_dist_bins = torch.linspace(0.5, 32, 64, device=pred_atom_pos.device).float()
 
+            # calculate pae labels
             pred_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', pred_atom_pos, frame_indices)
             gt_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', atom_pos, frame_indices)
             pae_labels =  compute_pae_labels(pred_atom_pos, molecule_pos, pred_frame_atoms, gt_frame_atoms, frame_mask, ignore, conf_head_dist_bins)
-
             pae_labels = torch.where(pairwise_mask, pae_labels, ignore)
             pae_loss = F.cross_entropy(logits.pae, pae_labels, ignore_index = ignore)
 
-
+            # calculate pde labels
             pde_labels = compute_pde_labels(pred_atom_pos, molecule_pos, conf_head_dist_bins)
             pde_labels = torch.where(pairwise_mask, pde_labels, ignore)
             pde_loss = F.cross_entropy(logits.pde, pde_labels, ignore_index = ignore)
 
+            # calculate plddt labels
             is_dna, is_rna, _ = additional_molecule_feats[-3:]
             plddt_labels = compute_plddt_labels(pred_atom_pos, molecule_pos, is_dna, is_rna)
             plddt_labels = torch.where(mask, plddt_labels, ignore)
