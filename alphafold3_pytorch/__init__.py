@@ -54,6 +54,12 @@ from alphafold3_pytorch.configs import (
     create_trainer_from_conductor_yaml
 )
 
+from alphafold3_pytorch.moe import (
+    MoE,
+    MoEGate,
+    MLP,
+)
+
 __all__ = [
     Attention,
     Attend,
@@ -87,6 +93,9 @@ __all__ = [
     Trainer,
     TrainerConfig,
     ConductorConfig,
+    MoE,
+    MoEGate,
+    MLP,
     create_alphafold3_from_yaml,
     create_trainer_from_yaml,
     create_trainer_from_conductor_yaml
