@@ -41,6 +41,8 @@ from frame_averaging_pytorch import FrameAverage
 
 from taylor_series_linear_attention import TaylorSeriesLinearAttn
 
+from colt5_attention import ConditionalRoutedAttention
+
 import einx
 from einops import rearrange, repeat, reduce, einsum, pack, unpack
 from einops.layers.torch import Rearrange
@@ -48,6 +50,8 @@ from einops.layers.torch import Rearrange
 from tqdm import tqdm
 
 from importlib.metadata import version
+
+from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
 
 """
 global ein notation:
@@ -1458,7 +1462,15 @@ class DiffusionTransformer(Module):
         linear_attn_kwargs = dict(
             heads = 8,
             dim_head = 16
+        ),
+        use_colt5_attn = False,
+        colt5_attn_kwargs = dict(
+            heavy_dim_head = 64,
+            heavy_heads = 8,
+            num_heavy_tokens_q = 512,
+            num_heavy_tokens_kv = 512
         )
+
     ):
         super().__init__()
         self.attn_window_size = attn_window_size
@@ -1477,6 +1489,15 @@ class DiffusionTransformer(Module):
                     prenorm = True,
                     gate_value_heads = True,
                     **linear_attn_kwargs
+                )
+
+            colt5_attn = None
+
+            if use_colt5_attn:
+                colt5_attn = ConditionalRoutedAttention(
+                    dim = dim,
+                    has_light_attn = False,
+                    **colt5_attn_kwargs
                 )
 
             pair_bias_attn = AttentionPairBias(
@@ -1506,6 +1527,7 @@ class DiffusionTransformer(Module):
 
             layers.append(ModuleList([
                 linear_attn,
+                colt5_attn,
                 conditionable_pair_bias,
                 conditionable_transition
             ]))
@@ -1558,10 +1580,13 @@ class DiffusionTransformer(Module):
 
         # main transformer
 
-        for linear_attn, attn, transition in self.layers:
+        for linear_attn, colt5_attn, attn, transition in self.layers:
 
             if exists(linear_attn):
                 noised_repr = linear_attn(noised_repr, mask = mask) + noised_repr
+
+            if exists(colt5_attn):
+                noised_repr = colt5_attn(noised_repr, mask = mask) + noised_repr
 
             attn_out = attn(
                 noised_repr,
@@ -3198,13 +3223,18 @@ class Alphafold3(Module):
         torch.save(package, str(path))
 
     @typecheck
-    def load(self, path: str | Path, strict = False):
+    def load(
+        self,
+        path: str | Path,
+        strict = False,
+        map_location = 'cpu'
+    ):
         if isinstance(path, str):
             path = Path(path)
 
         assert path.exists() and path.is_file()
 
-        package = torch.load(str(path), map_location = 'cpu')
+        package = torch.load(str(path), map_location = map_location)
 
         model_package = package['model']
         current_version = version('alphafold3_pytorch')
@@ -3218,13 +3248,16 @@ class Alphafold3(Module):
 
     @staticmethod
     @typecheck
-    def init_and_load(path: str | Path):
+    def init_and_load(
+        path: str | Path,
+        map_location = 'cpu'
+    ):
         if isinstance(path, str):
             path = Path(path)
 
         assert path.is_file()
 
-        package = torch.load(str(path), map_location = 'cpu')
+        package = torch.load(str(path), map_location = map_location)
 
         model_package = package['model']
 
@@ -3668,3 +3701,46 @@ class Alphafold3(Module):
         )
 
         return loss, loss_breakdown
+
+# an alphafold3 that can download pretrained weights from huggingface
+
+class Alphafold3WithHubMixin(Alphafold3, PyTorchModelHubMixin):
+    @classmethod
+    def _from_pretrained(
+        cls,
+        *,
+        model_id: str,
+        revision: str | None,
+        cache_dir: str | Path | None,
+        force_download: bool,
+        proxies: Dict | None,
+        resume_download: bool,
+        local_files_only: bool,
+        token: str | bool | None,
+        map_location: str = 'cpu',
+        strict: bool = False,
+        **model_kwargs,
+    ):
+        model_filename = "alphafold3.bin"
+        model_file = Path(model_id) / model_filename
+
+        if not model_file.exists():
+            model_file = hf_hub_download(
+                repo_id = model_id,
+                filename = model_filename,
+                revision = revision,
+                cache_dir = cache_dir,
+                force_download = force_download,
+                proxies = proxies,
+                resume_download = resume_download,
+                token = token,
+                local_files_only = local_files_only,
+            )
+
+        model = cls.init_and_load(
+            model_file,
+            strict = strict,
+            map_location = map_location
+        )
+
+        return model

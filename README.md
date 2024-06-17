@@ -6,6 +6,10 @@ Implementation of <a href="https://www.nature.com/articles/s41586-024-07487-w">A
 
 You can chat with other researchers about this work <a href="https://discord.gg/x6FuzQPQXY">here</a>
 
+<a href="https://www.youtube.com/watch?v=qjFgthkKxcA">Review of the paper</a> by <a href="https://x.com/sokrypton">Sergey</a>
+
+A fork with full Lightning + Hydra support is being maintained by <a href="https://github.com/amorehead">Alex</a> at <a href="https://github.com/amorehead/alphafold3-pytorch-lightning-hydra">this repository</a>
+
 ## Appreciation
 
 - <a href="https://github.com/joseph-c-kim">Joseph</a> for contributing the Relative Positional Encoding and the Smooth LDDT Loss!
@@ -257,5 +261,13 @@ docker run -v .:/data --gpus all -it af3
     year    = {2022},
     volume  = {abs/2203.00555},
     url     = {https://api.semanticscholar.org/CorpusID:247187905}
+}
+```
+
+```bibtex
+@inproceedings{Ainslie2023CoLT5FL,
+    title   = {CoLT5: Faster Long-Range Transformers with Conditional Computation},
+    author  = {Joshua Ainslie and Tao Lei and Michiel de Jong and Santiago Ontan'on and Siddhartha Brahma and Yury Zemlyanskiy and David Uthus and Mandy Guo and James Lee-Thorp and Yi Tay and Yun-Hsuan Sung and Sumit Sanghai},
+    year    = {2023}
 }
 ```
