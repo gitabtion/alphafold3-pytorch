@@ -14,8 +14,8 @@ class AtomInput(TypedDict):
     molecule_atom_lens:         Int['n']
     atompair_inputs:            Float['m m dapi'] | Float['nw w (w*2) dapi']
     additional_molecule_feats:  Float['n 9']
-    templates:                  Float['t n n dt']
-    msa:                        Float['s n dm']
+    templates:                  Float['t n n dt'] | None
+    msa:                        Float['s n dm'] | None
     token_bonds:                Bool['n n'] | None
     atom_ids:                   Int['m'] | None
     atompair_ids:               Int['m m'] | Int['nw w (w*2)'] | None
@@ -35,8 +35,8 @@ class BatchedAtomInput(TypedDict):
     molecule_atom_lens:         Int['b n']
     atompair_inputs:            Float['b m m dapi'] | Float['b nw w (w*2) dapi']
     additional_molecule_feats:  Float['b n 9']
-    templates:                  Float['b t n n dt']
-    msa:                        Float['b s n dm']
+    templates:                  Float['b t n n dt'] | None
+    msa:                        Float['b s n dm'] | None
     token_bonds:                Bool['b n n'] | None
     atom_ids:                   Int['b m'] | None
     atompair_ids:               Int['b m m'] | Int['b nw w (w*2)'] | None

@@ -2389,6 +2389,11 @@ class WeightedRigidAlign(Module):
         cov_matrix = einsum(weights * true_coords_centered, pred_coords_centered, 'b n i, b n j -> b i j')
 
         # Compute the SVD of the covariance matrix
+        dtype = cov_matrix.dtype
+        # svd unsupport bf16
+        if dtype == torch.bfloat16:
+            cov_matrix = cov_matrix.to(torch.float32)
+        
         U, S, V = torch.svd(cov_matrix)
 
         # Catch ambiguous rotation by checking the magnitude of singular values
@@ -2401,11 +2406,17 @@ class WeightedRigidAlign(Module):
 
         # Compute the rotation matrix
         rot_matrix = einsum(U, V, 'b i j, b k j -> b i k')
+        
+        if dtype == torch.bfloat16:
+            rot_matrix = rot_matrix.to(torch.float32)
 
         # Ensure proper rotation matrix with determinant 1
         F = torch.eye(dim, dtype=cov_matrix.dtype, device=cov_matrix.device)[None].repeat(batch_size, 1, 1)
         F[:, -1, -1] = torch.det(rot_matrix)
         rot_matrix = einsum(U, F, V, "b i j, b j k, b l k -> b i l")
+
+        if rot_matrix.dtype != dtype:
+            rot_matrix = rot_matrix.to(dtype)
 
         # Apply the rotation and translation
         aligned_coords = einsum(pred_coords_centered, rot_matrix, 'b n i, b j i -> b n j') + true_centroid
