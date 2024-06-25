@@ -1,6 +1,6 @@
 [project]
 name = "alphafold3-pytorch"
-version = "0.1.63"
+version = "0.1.65"
 description = "Alphafold 3 - Pytorch"
 authors = [
     { name = "Phil Wang", email = "lucidrains@gmail.com" }
@@ -45,6 +45,7 @@ dependencies = [
     'torch_geometric',
     "torch>=2.1",
     "tqdm>=4.66.4",
+    "loguru",
 ]
 
 [project.urls]

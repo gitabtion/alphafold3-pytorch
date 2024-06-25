@@ -8,7 +8,7 @@ from alphafold3_pytorch.attention import pad_at_dim
 
 from typing import TypedDict, List, Callable
 
-from alphafold3_pytorch.custom_typing import (
+from alphafold3_pytorch.tensor_typing import (
     typecheck,
     beartype_isinstance,
     Int, Bool, Float
@@ -183,7 +183,7 @@ def collate_af3_inputs(
 
     # reconstitute dictionary
 
-    batched_atom_inputs = AtomInput(tuple(zip(keys, outputs)))
+    batched_atom_inputs = BatchedAtomInput(tuple(zip(keys, outputs)))
     return batched_atom_inputs
 
 @typecheck

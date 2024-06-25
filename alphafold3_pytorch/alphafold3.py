@@ -6,9 +6,10 @@ from functools import partial, wraps
 from collections import namedtuple
 
 import torch
-from torch import nn, sigmoid
+from torch import nn
 from torch import Tensor
 import torch.nn.functional as F
+from loguru import logger
 
 from torch.nn import (
     Module,
@@ -17,9 +18,9 @@ from torch.nn import (
     Sequential,
 )
 
-from typing import List, Literal, Tuple, NamedTuple, Callable
+from typing import List, Literal, Tuple, NamedTuple, Dict, Callable
 
-from alphafold3_pytorch.custom_typing import (
+from alphafold3_pytorch.tensor_typing import (
     Float,
     Int,
     Bool,
@@ -1554,7 +1555,8 @@ class DiffusionTransformer(Module):
         *,
         single_repr: Float['b n ds'],
         pairwise_repr: Float['b n n dp'] | Float['b nw w (w*2) dp'],
-        mask: Bool['b n'] | None = None
+        mask: Bool['b n'] | None = None,
+        windowed_mask: Bool['b nw w (w*2)'] | None = None
     ):
         w = self.attn_window_size
         has_windows = exists(w)
@@ -1595,7 +1597,8 @@ class DiffusionTransformer(Module):
                 noised_repr,
                 cond = single_repr,
                 pairwise_repr = pairwise_repr,
-                mask = mask
+                mask = mask,
+                windowed_mask = windowed_mask
             )
 
             if serial:
@@ -1805,7 +1808,8 @@ class DiffusionModule(Module):
         single_inputs_repr: Float['b n dsi'],
         pairwise_trunk: Float['b n n dpt'],
         pairwise_rel_pos_feats: Float['b n n dpr'],
-        molecule_atom_lens: Int['b n']
+        molecule_atom_lens: Int['b n'],
+        atom_parent_ids: Int['b m'] | None = None
     ):
         w = self.atoms_per_window
         device = noised_atom_pos.device
@@ -1886,11 +1890,22 @@ class DiffusionModule(Module):
 
         atompair_feats = self.atompair_feats_mlp(atompair_feats) + atompair_feats
 
+        # take care of restricting atom attention to be intra molecular, if the atom_parent_ids were passed in
+
+        windowed_mask = None
+
+        if exists(atom_parent_ids):
+            atom_parent_ids_rows = pad_and_window(atom_parent_ids, w)
+            atom_parent_ids_columns = concat_previous_window(atom_parent_ids_rows, dim_seq = 1, dim_window = 2)
+
+            windowed_mask = einx.equal('b n i, b n j -> b n i j', atom_parent_ids_rows, atom_parent_ids_columns)
+
         # atom encoder
 
         atom_feats = self.atom_encoder(
             atom_feats,
             mask = atom_mask,
+            windowed_mask = windowed_mask,
             single_repr = atom_feats_cond,
             pairwise_repr = atompair_feats
         )
@@ -1928,6 +1943,7 @@ class DiffusionModule(Module):
         atom_feats = self.atom_decoder(
             atom_decoder_input,
             mask = atom_mask,
+            windowed_mask = windowed_mask,
             single_repr = atom_feats_cond,
             pairwise_repr = atompair_feats
         )
@@ -2153,6 +2169,7 @@ class ElucidatedAtomDiffusion(Module):
         pairwise_trunk: Float['b n n dpt'],
         pairwise_rel_pos_feats: Float['b n n dpr'],
         molecule_atom_lens: Int['b n'],
+        atom_parent_ids: Int['b m'] | None = None,
         return_denoised_pos = False,
         additional_molecule_feats: Float[f'b n {ADDITIONAL_MOLECULE_FEATS}'] | None = None,
         add_smooth_lddt_loss = False,
@@ -2180,6 +2197,7 @@ class ElucidatedAtomDiffusion(Module):
                 atom_feats = atom_feats,
                 atom_mask = atom_mask,
                 atompair_feats = atompair_feats,
+                atom_parent_ids = atom_parent_ids,
                 mask = mask,
                 single_trunk_repr = single_trunk_repr,
                 single_inputs_repr = single_inputs_repr,
@@ -2380,7 +2398,7 @@ class WeightedRigidAlign(Module):
         true_coords_centered = true_coords - true_centroid
 
         if num_points < (dim + 1):
-            print(
+            logger.warning(
                 "Warning: The size of one of the point clouds is <= dim+1. "
                 + "`WeightedRigidAlign` cannot return a unique rotation."
             )
@@ -2398,7 +2416,7 @@ class WeightedRigidAlign(Module):
 
         # Catch ambiguous rotation by checking the magnitude of singular values
         if (S.abs() <= 1e-15).any() and not (num_points < (dim + 1)):
-            print(
+            logger.warning(
                 "Warning: Excessively low rank of "
                 + "cross-correlation between aligned point clouds. "
                 + "`WeightedRigidAlign` cannot return a unique rotation."
@@ -3276,7 +3294,7 @@ class Alphafold3(Module):
         current_version = version('alphafold3_pytorch')
 
         if model_package['version'] != current_version:
-            print(f'loading a saved model from version {model_package["version"]} but you are on version {current_version}')
+            logger.warning(f'loading a saved model from version {model_package["version"]} but you are on version {current_version}')
 
         self.load_state_dict(model_package['state_dict'], strict = strict)
 
@@ -3315,6 +3333,7 @@ class Alphafold3(Module):
         atom_ids: Int['b m'] | None = None,
         atompair_ids: Int['b m m'] | Int['b nw w1 w2'] | None = None,
         atom_mask: Bool['b m'] | None = None,
+        atom_parent_ids: Int['b m'] | None = None,
         token_bonds: Bool['b n n'] | None = None,
         msa: Float['b s n d'] | None = None,
         msa_mask: Bool['b s'] | None = None,
@@ -3521,6 +3540,7 @@ class Alphafold3(Module):
                 num_sample_steps = num_sample_steps,
                 atom_feats = atom_feats,
                 atompair_feats = atompair_feats,
+                atom_parent_ids = atom_parent_ids,
                 atom_mask = atom_mask,
                 mask = mask,
                 single_trunk_repr = single,
@@ -3578,6 +3598,7 @@ class Alphafold3(Module):
                     atom_pos,
                     atom_mask,
                     atom_feats,
+                    atom_parent_ids,
                     atompair_feats,
                     mask,
                     pairwise_mask,
@@ -3599,6 +3620,7 @@ class Alphafold3(Module):
                         atom_pos,
                         atom_mask,
                         atom_feats,
+                        atom_parent_ids,
                         atompair_feats,
                         mask,
                         pairwise_mask,
@@ -3642,6 +3664,7 @@ class Alphafold3(Module):
                 add_bond_loss = diffusion_add_bond_loss,
                 atom_feats = atom_feats,
                 atompair_feats = atompair_feats,
+                atom_parent_ids = atom_parent_ids,
                 atom_mask = atom_mask,
                 mask = mask,
                 single_trunk_repr = single,
@@ -3757,9 +3780,9 @@ class Alphafold3WithHubMixin(Alphafold3, PyTorchModelHubMixin):
         token: str | bool | None,
         map_location: str = 'cpu',
         strict: bool = False,
+        model_filename: str = 'alphafold3.bin',
         **model_kwargs,
     ):
-        model_filename = "alphafold3.bin"
         model_file = Path(model_id) / model_filename
 
         if not model_file.exists():
