@@ -1,9 +1,24 @@
-from typing import Type, TypedDict, Literal, Callable
+from typing import Type, TypedDict, Literal, Callable, List
+
+from rdkit import Chem
+from rdkit.Chem.rdchem import Mol
 
 from alphafold3_pytorch.tensor_typing import (
     typecheck,
     Int, Bool, Float
 )
+
+from alphafold3_pytorch.life import (
+    HUMAN_AMINO_ACIDS,
+    NUCLEOTIDES,
+    METALS,
+    MISC
+)
+
+# constants
+
+IS_MOLECULE_TYPES = 4
+ADDITIONAL_MOLECULE_FEATS = 5
 
 # atom level, what Alphafold3 accepts
 
@@ -13,11 +28,13 @@ class AtomInput(TypedDict):
     molecule_ids:               Int['n']
     molecule_atom_lens:         Int['n']
     atompair_inputs:            Float['m m dapi'] | Float['nw w (w*2) dapi']
-    additional_molecule_feats:  Float['n 9']
+    additional_molecule_feats:  Float[f'n {ADDITIONAL_MOLECULE_FEATS}']
+    is_molecule_types:          Bool[f'n {IS_MOLECULE_TYPES}']
     templates:                  Float['t n n dt'] | None
     msa:                        Float['s n dm'] | None
     token_bonds:                Bool['n n'] | None
     atom_ids:                   Int['m'] | None
+    atom_parent_ids:            Int['m'] | None
     atompair_ids:               Int['m m'] | Int['nw w (w*2)'] | None
     template_mask:              Bool['t'] | None
     msa_mask:                   Bool['s'] | None
@@ -34,11 +51,13 @@ class BatchedAtomInput(TypedDict):
     molecule_ids:               Int['b n']
     molecule_atom_lens:         Int['b n']
     atompair_inputs:            Float['b m m dapi'] | Float['b nw w (w*2) dapi']
-    additional_molecule_feats:  Float['b n 9']
+    additional_molecule_feats:  Float[f'b n {ADDITIONAL_MOLECULE_FEATS}']
+    is_molecule_types:          Bool[f'b n {IS_MOLECULE_TYPES}']
     templates:                  Float['b t n n dt'] | None
     msa:                        Float['b s n dm'] | None
     token_bonds:                Bool['b n n'] | None
     atom_ids:                   Int['b m'] | None
+    atom_parent_ids:            Int['b m'] | None
     atompair_ids:               Int['b m m'] | Int['b nw w (w*2)'] | None
     template_mask:              Bool['b t'] | None
     msa_mask:                   Bool['b s'] | None
@@ -48,6 +67,33 @@ class BatchedAtomInput(TypedDict):
     pae_labels:                 Int['b n n'] | None
     pde_labels:                 Int['b n'] | None
     resolved_labels:            Int['b n'] | None
+
+# molecule input - accepting list of molecules as rdchem.Mol + the atomic lengths for how to pool into tokens
+
+@typecheck
+class MoleculeInput(TypedDict):
+    molecules:                  List[Mol]
+    molecule_token_pool_lens:   List[List[int]]
+    molecule_atom_indices:      List[List[int] | None]
+    molecule_ids:               Int['n']
+    additional_molecule_feats:  Float['n 5']
+    is_molecule_types:          Bool['n 4']
+    atom_pos:                   List[Float['_ 3']] | Float['m 3'] | None
+    templates:                  Float['t n n dt']
+    template_mask:              Bool['t'] | None
+    msa:                        Float['s n dm']
+    msa_mask:                   Bool['s'] | None
+    distance_labels:            Int['n n'] | None
+    pae_labels:                 Int['n n'] | None
+    pde_labels:                 Int['n'] | None
+    resolved_labels:            Int['n'] | None
+
+@typecheck
+def molecule_to_atom_input(molecule_input: MoleculeInput) -> AtomInput:
+    raise NotImplementedError
+
+def validate_molecule_input(molecule_input: MoleculeInput):
+    assert True
 
 # residue level - single chain proteins for starters
 
@@ -103,6 +149,7 @@ def single_protein_input_and_single_nucleic_acid_to_atom_input(
 # this can be preprocessed or will be taken care of automatically within the Trainer during data collation
 
 INPUT_TO_ATOM_TRANSFORM = {
+    MoleculeInput: molecule_to_atom_input,
     SingleProteinInput: single_protein_input_to_atom_input,
     SingleProteinSingleNucleicAcidInput: single_protein_input_and_single_nucleic_acid_to_atom_input
 }
