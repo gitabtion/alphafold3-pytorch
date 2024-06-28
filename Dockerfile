@@ -14,16 +14,22 @@ RUN apt-get update \
     && apt-get clean
 
 ## Install some Python dependencies
-RUN python -m pip install --no-cache-dir \
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    && python -m pip install --no-cache-dir \
     pytest \
     requests \
-    biopandas
+    biopandas \
+    omegaconf \
+    wandb \
+    pyscf \
+    tensorboard \
+    tensorboardX
 
 ## Change working directory
 WORKDIR /app/alphafold
 
 ## Clone and install the package + requirements
-ARG GIT_TAG=main
-RUN git clone https://github.com/lucidrains/alphafold3-pytorch . --branch ${GIT_TAG} \
+ARG GIT_TAG=carsifold
+RUN git clone https://github.com/gitabtion/alphafold3-pytorch.git . --branch ${GIT_TAG} \
     # && git checkout main \
     && python -m pip install .
