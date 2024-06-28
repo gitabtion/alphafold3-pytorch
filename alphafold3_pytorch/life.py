@@ -1,5 +1,13 @@
+import torch
+
 import rdkit
 from rdkit import Chem
+
+from typing import Literal
+from alphafold3_pytorch.tensor_typing import (
+    Int,
+    typecheck
+)
 
 # human amino acids
 
@@ -68,23 +76,70 @@ HUMAN_AMINO_ACIDS = dict(
 
 # nucleotides
 
-NUCLEOTIDES = dict(
+DNA_NUCLEOTIDES = dict(
     A = dict(
-        smile = 'C1=NC2=NC=NC(=C2N1)N'
-    ),
-    G = dict(
-        smile = 'C1=NC2=C(N1)C(=O)NC(=N2)N'
+        smile = 'C1C(C(OC1N2C=NC3=C(N=CN=C32)N)CO)O',
+        complement = 'T'
     ),
     C = dict(
-        smile = 'C1=C(NC(=O)N=C1)N'
+        smile = 'C1C(C(OC1N2C=CC(=NC2=O)N)CO)O',
+        complement = 'G'
+    ),
+    G = dict(
+        smile = 'C1C(C(OC1N2C=NC3=C2N=C(NC3=O)N)CO)O',
+        complement = 'C'
     ),
     T = dict(
-        smile = 'CC1=CN(C(=O)NC1=O)C2CC(C(O2)CO)O'
-    ),
-    U = dict(
-        smile = 'C1=CNC(=O)NC1=O'
+        smile = 'CC1=CN(C(=O)NC1=O)C2CC(C(O2)CO)O',
+        complement = 'A'
     )
 )
+
+RNA_NUCLEOTIDES = dict(
+    A = dict(
+        smile = 'C1=NC(=C2C(=N1)N(C=N2)C3C(C(C(O3)COP(=O)(O)O)O)O)N',
+        complement = 'U'
+    ),
+    C = dict(
+        smile = 'C1=CN(C(=O)N=C1N)C2C(C(C(O2)COP(=O)([O-])[O-])O)O',
+        complement = 'G'
+    ),
+    G = dict(
+        smile = 'C1=NC2=C(N1C3C(C(C(O3)COP(=O)(O)O)O)O)N=C(NC2=O)N',
+        complement = 'C'
+    ),
+    U = dict(
+        smile = 'C1=CN(C(=O)NC1=O)C2C(C(C(O2)COP(=O)(O)O)O)O',
+        complement = 'A'
+    )
+)
+
+# complements in tensor form, following the ordering ACG(T|U)N
+
+NUCLEIC_ACID_COMPLEMENT_TENSOR = torch.tensor([3, 2, 1, 0, 4], dtype = torch.long)
+
+# some functions for nucleic acids
+
+@typecheck
+def reverse_complement(
+    seq: str,
+    nucleic_acid_type: Literal['dna', 'rna'] = 'dna'
+):
+    if nucleic_acid_type == 'dna':
+        nucleic_acid_entries = DNA_NUCLEOTIDES
+    elif nucleic_acid_type == 'rna':
+        nucleic_acid_entries = RNA_NUCLEOTIDES
+
+    assert all([nuc in nucleic_acid_entries for nuc in seq]), 'unknown nucleotide for given nucleic acid type'
+
+    complement = [nucleic_acid_entries[nuc]['complement'] for nuc in seq]
+    return ''.join(complement[::-1])
+
+@typecheck
+def reverse_complement_tensor(t: Int['n']):
+    complement = NUCLEIC_ACID_COMPLEMENT_TENSOR[t]
+    reverse_complement = t.flip(dims = (-1,))
+    return reverse_complement
 
 # metal ions
 
@@ -109,6 +164,12 @@ METALS = dict(
     ),
     Zn = dict(
         smile = '[Zn]'
+    ),
+    Na = dict(
+        smile = '[Na]'
+    ),
+    Cl = dict(
+        smile = '[Cl]'
     )
 )
 
@@ -122,14 +183,16 @@ MISC = dict(
 
 # initialize rdkit.Chem with canonical SMILES
 
-for aa_dict in HUMAN_AMINO_ACIDS.values():
-    aa_dict['rdchem_mol'] = Chem.MolFromSmiles(aa_dict['smile'])
+ALL_ENTRIES = [
+    *HUMAN_AMINO_ACIDS.values(),
+    *DNA_NUCLEOTIDES.values(),
+    *RNA_NUCLEOTIDES.values(),
+    *METALS.values(),
+    *MISC.values(),
+]
 
-for nuc_dict in NUCLEOTIDES.values():
-    nuc_dict['rdchem_mol'] = Chem.MolFromSmiles(nuc_dict['smile'])
+for entry in ALL_ENTRIES:
+    mol = Chem.MolFromSmiles(entry['smile'])
 
-for metal_dict in METALS.values():
-    metal_dict['rdchem_mol'] = Chem.MolFromSmiles(metal_dict['smile'])
-
-for misc_dict in MISC.values():
-    misc_dict['rdchem_mol'] = Chem.MolFromSmiles(misc_dict['smile'])
+    entry['num_atoms'] = mol.GetNumAtoms()
+    entry['rdchem_mol'] = mol

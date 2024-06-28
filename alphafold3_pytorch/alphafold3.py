@@ -38,6 +38,11 @@ from alphafold3_pytorch.attention import (
     full_pairwise_repr_to_windowed
 )
 
+from alphafold3_pytorch.inputs import (
+    IS_MOLECULE_TYPES,
+    ADDITIONAL_MOLECULE_FEATS
+)
+
 from frame_averaging_pytorch import FrameAverage
 
 from taylor_series_linear_attention import TaylorSeriesLinearAttn
@@ -97,11 +102,6 @@ is_molecule_types: [*, 4]
 """
 
 # constants
-
-from alphafold3_pytorch.inputs import (
-    IS_MOLECULE_TYPES,
-    ADDITIONAL_MOLECULE_FEATS
-)
 
 LinearNoBias = partial(Linear, bias = False)
 
@@ -1173,7 +1173,7 @@ class RelativePositionEncoding(Module):
     def forward(
         self,
         *,
-        additional_molecule_feats: Float[f'b n {ADDITIONAL_MOLECULE_FEATS}']
+        additional_molecule_feats: Int[f'b n {ADDITIONAL_MOLECULE_FEATS}']
     ) -> Float['b n n dp']:
 
         device = additional_molecule_feats.device
@@ -1470,6 +1470,7 @@ class DiffusionTransformer(Module):
         trans_expansion_factor = 2,
         num_register_tokens = 0,
         serial = False,
+        add_residual = True,
         use_linear_attn = False,
         linear_attn_kwargs = dict(
             heads = 8,
@@ -1548,6 +1549,7 @@ class DiffusionTransformer(Module):
         self.layers = layers
 
         self.serial = serial
+        self.add_residual = add_residual
 
         self.has_registers = num_register_tokens > 0
         self.num_registers = num_register_tokens
@@ -1618,10 +1620,17 @@ class DiffusionTransformer(Module):
                 cond = single_repr
             )
 
-            if not serial:
-                ff_out = ff_out + attn_out
+            if serial:
+                noised_repr = ff_out + noised_repr
 
-            noised_repr = noised_repr + ff_out
+            # in the algorithm, they omitted the residual, but it could be an error
+            # attn + ff + residual was used in GPT-J and PaLM, but later found to be unstable configuration, so it seems unlikely attn + ff would work
+            # but in the case they figured out something we have not, you can use their exact formulation by setting `serial = False` and `add_residual = False`
+
+            residual = noised_repr if self.add_residual else 0.
+
+            if not serial:
+                ff_out = ff_out + attn_out + residual
 
         # splice out registers
 
@@ -2181,7 +2190,7 @@ class ElucidatedAtomDiffusion(Module):
         atom_parent_ids: Int['b m'] | None = None,
         return_denoised_pos = False,
         is_molecule_types: Bool[f'b n {IS_MOLECULE_TYPES}'] | None = None,
-        additional_molecule_feats: Float[f'b n {ADDITIONAL_MOLECULE_FEATS}'] | None = None,
+        additional_molecule_feats: Int[f'b n {ADDITIONAL_MOLECULE_FEATS}'] | None = None,
         add_smooth_lddt_loss = False,
         add_bond_loss = False,
         nucleotide_loss_weight = 5.,
@@ -2688,7 +2697,7 @@ class InputFeatureEmbedder(Module):
         atompair_inputs: Float['b m m dapi'] | Float['b nw w1 w2 dapi'],
         atom_mask: Bool['b m'],
         is_molecule_types: Bool[f'b n {IS_MOLECULE_TYPES}'],
-        additional_molecule_feats: Float[f'b n {ADDITIONAL_MOLECULE_FEATS}'],
+        additional_molecule_feats: Int[f'b n {ADDITIONAL_MOLECULE_FEATS}'],
         molecule_atom_lens: Int['b n'],
         molecule_ids: Int['b n']
 
@@ -2738,7 +2747,7 @@ class InputFeatureEmbedder(Module):
 
         single_inputs = torch.cat((
             single_inputs,
-            additional_molecule_feats,
+            additional_molecule_feats.float(),
             is_molecule_types.float()
         ), dim = -1)
 
@@ -3342,7 +3351,7 @@ class Alphafold3(Module):
         *,
         atom_inputs: Float['b m dai'],
         atompair_inputs: Float['b m m dapi'] | Float['b nw w1 w2 dapi'],
-        additional_molecule_feats: Float[f'b n {ADDITIONAL_MOLECULE_FEATS}'],
+        additional_molecule_feats: Int[f'b n {ADDITIONAL_MOLECULE_FEATS}'],
         is_molecule_types: Bool[f'b n {IS_MOLECULE_TYPES}'],
         molecule_atom_lens: Int['b n'],
         molecule_ids: Int['b n'],

@@ -3,6 +3,7 @@ os.environ['TYPECHECK'] = 'True'
 
 from pathlib import Path
 from random import randrange, random
+from dataclasses import asdict
 
 import pytest
 import torch
@@ -14,7 +15,7 @@ from alphafold3_pytorch import (
     DataLoader,
     Trainer,
     ConductorConfig,
-    collate_af3_inputs,
+    collate_inputs_to_batched_atom_input,
     create_trainer_from_yaml,
     create_trainer_from_conductor_yaml,
     create_alphafold3_from_yaml
@@ -47,7 +48,7 @@ class MockAtomDataset(Dataset):
         atompair_inputs = torch.randn(atom_seq_len, atom_seq_len, 5)
 
         molecule_atom_lens = torch.randint(1, self.atoms_per_window, (seq_len,))
-        additional_molecule_feats = torch.randn(seq_len, 5)
+        additional_molecule_feats = torch.randint(0, 2, (seq_len, 5))
         is_molecule_types = torch.randint(0, 2, (seq_len, 4)).bool()
         molecule_ids = torch.randint(0, 32, (seq_len,))
         token_bonds = torch.randint(0, 2, (seq_len, seq_len)).bool()
@@ -127,7 +128,7 @@ def test_trainer():
     inputs = next(iter(dataloader))
 
     alphafold3.eval()
-    _, breakdown = alphafold3(**inputs, return_loss_breakdown = True)
+    _, breakdown = alphafold3(**asdict(inputs), return_loss_breakdown = True)
     before_distogram = breakdown.distogram
 
     path = './some/nested/folder/af3'
@@ -138,7 +139,7 @@ def test_trainer():
     alphafold3 = Alphafold3.init_and_load(path)
 
     alphafold3.eval()
-    _, breakdown = alphafold3(**inputs, return_loss_breakdown = True)
+    _, breakdown = alphafold3(**asdict(inputs), return_loss_breakdown = True)
     after_distogram = breakdown.distogram
 
     assert torch.allclose(before_distogram, after_distogram)
@@ -217,9 +218,9 @@ def test_collate_fn():
 
     dataset = MockAtomDataset(1)
 
-    batched_atom_inputs = collate_af3_inputs([dataset[0]])
+    batched_atom_inputs = collate_inputs_to_batched_atom_input([dataset[0]])
 
-    _, breakdown = alphafold3(**batched_atom_inputs, return_loss_breakdown = True)
+    _, breakdown = alphafold3(**asdict(batched_atom_inputs), return_loss_breakdown = True)
 
 # test creating trainer + alphafold3 from config
 
