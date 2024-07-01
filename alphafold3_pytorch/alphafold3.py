@@ -77,13 +77,23 @@ dap - feature dimension (atompair)
 dapi - feature dimension (atompair input)
 da - feature dimension (atom)
 dai - feature dimension (atom input)
+dtf - additional token feats derived from msa (f_profile and f_deletion_mean)
 t - templates
 s - msa
 r - registers
 """
 
 """
+additional_token_feats: [*]
+- concatted to the single rep
+
+0: f_profile
+1: f_deletion_mean
+"""
+
+"""
 additional_molecule_feats: [*, 5]:
+- used for deriving relative positions
 
 0: molecule_index
 1: token_index
@@ -1056,7 +1066,8 @@ class PairformerStack(Module):
         pair_bias_attn_heads = 16,
         dropout_row_prob = 0.25,
         num_register_tokens = 0,
-        pairwise_block_kwargs: dict = dict()
+        pairwise_block_kwargs: dict = dict(),
+        pair_bias_attn_kwargs: dict = dict()
     ):
         super().__init__()
         layers = ModuleList([])
@@ -1066,7 +1077,8 @@ class PairformerStack(Module):
             dim_pairwise = dim_pairwise,
             heads = pair_bias_attn_heads,
             dim_head = pair_bias_attn_dim_head,
-            dropout = dropout_row_prob
+            dropout = dropout_row_prob,
+            **pair_bias_attn_kwargs
         )
 
         for _ in range(depth):
@@ -2638,6 +2650,7 @@ class InputFeatureEmbedder(Module):
         dim_token = 384,
         dim_single = 384,
         dim_pairwise = 128,
+        dim_additional_token_feats = 2,
         num_molecule_types = 32,
         atom_transformer_blocks = 3,
         atom_transformer_heads = 4,
@@ -2679,7 +2692,9 @@ class InputFeatureEmbedder(Module):
             dim_out = dim_token
         )
 
-        dim_single_input = dim_token + ADDITIONAL_MOLECULE_FEATS + IS_MOLECULE_TYPES
+        dim_single_input = dim_token + dim_additional_token_feats
+
+        self.dim_additional_token_feats = dim_additional_token_feats
 
         self.single_input_to_single_init = LinearNoBias(dim_single_input, dim_single)
         self.single_input_to_pairwise_init = LinearNoBiasThenOuterSum(dim_single_input, dim_pairwise)
@@ -2696,14 +2711,11 @@ class InputFeatureEmbedder(Module):
         atom_inputs: Float['b m dai'],
         atompair_inputs: Float['b m m dapi'] | Float['b nw w1 w2 dapi'],
         atom_mask: Bool['b m'],
-        is_molecule_types: Bool[f'b n {IS_MOLECULE_TYPES}'],
-        additional_molecule_feats: Int[f'b n {ADDITIONAL_MOLECULE_FEATS}'],
         molecule_atom_lens: Int['b n'],
-        molecule_ids: Int['b n']
+        molecule_ids: Int['b n'],
+        additional_token_feats: Float['b n {self.dim_additional_token_feats}'] | None = None,
 
     ) -> EmbeddedInputs:
-
-        assert additional_molecule_feats.shape[-1] == ADDITIONAL_MOLECULE_FEATS
 
         w = self.atoms_per_window
 
@@ -2745,11 +2757,11 @@ class InputFeatureEmbedder(Module):
             molecule_atom_lens = molecule_atom_lens
         )
 
-        single_inputs = torch.cat((
-            single_inputs,
-            additional_molecule_feats.float(),
-            is_molecule_types.float()
-        ), dim = -1)
+        if exists(additional_token_feats):
+            single_inputs = torch.cat((
+                single_inputs,
+                additional_token_feats
+            ), dim = -1)
 
         single_init = self.single_input_to_single_init(single_inputs)
         pairwise_init = self.single_input_to_pairwise_init(single_inputs)
@@ -3032,7 +3044,8 @@ class Alphafold3(Module):
         dim_single = 384,
         dim_pairwise = 128,
         dim_token = 768,
-        num_molecule_types: int = 32,  # restype in additional residue information, apparently 32 (must be human amino acids + nucleotides + something else)
+        dim_additional_token_feats = 2,     # in paper, they include two meta information per token (f_profile, f_deletion_mean)
+        num_molecule_types: int = 32,       # restype in additional residue information, apparently 32 (must be human amino acids + nucleotides + something else)
         num_atom_embeds: int | None = None,
         num_atompair_embeds: int | None = None,
         distance_bins: List[float] = torch.linspace(3, 20, 38).float().tolist(),
@@ -3113,6 +3126,11 @@ class Alphafold3(Module):
     ):
         super().__init__()
 
+        # store atom and atompair input dimensions for shape validation
+
+        self.dim_atom_inputs = dim_atom_inputs
+        self.dim_atompair_inputs = dim_atompair_inputs
+
         # optional atom and atom bond embeddings
 
         has_atom_embeds = exists(num_atom_embeds)
@@ -3159,10 +3177,17 @@ class Alphafold3(Module):
             dim_token = dim_input_embedder_token,
             dim_single = dim_single,
             dim_pairwise = dim_pairwise,
+            dim_additional_token_feats = dim_additional_token_feats,
             **input_embedder_kwargs
         )
 
-        dim_single_inputs = dim_input_embedder_token + ADDITIONAL_MOLECULE_FEATS + IS_MOLECULE_TYPES
+        # they concat some MSA related information per token (`f_profile`, `f_deletion_mean`)
+        # line 2 of Algorithm 2
+        # the `f_restypes` is handled elsewhere
+
+        dim_single_inputs = dim_input_embedder_token + dim_additional_token_feats
+
+        self.dim_additional_token_feats = dim_additional_token_feats
 
         # relative positional encoding
         # used by pairwise in main alphafold2 trunk
@@ -3355,6 +3380,7 @@ class Alphafold3(Module):
         is_molecule_types: Bool[f'b n {IS_MOLECULE_TYPES}'],
         molecule_atom_lens: Int['b n'],
         molecule_ids: Int['b n'],
+        additional_token_feats: Float['b n {self.dim_additional_token_feats}'] | None = None,
         atom_ids: Int['b m'] | None = None,
         atompair_ids: Int['b m m'] | Int['b nw w1 w2'] | None = None,
         atom_mask: Bool['b m'] | None = None,
@@ -3384,6 +3410,11 @@ class Alphafold3(Module):
     ) -> Float['b m 3'] | Float[''] | Tuple[Float[''], LossBreakdown]:
 
         atom_seq_len = atom_inputs.shape[-2]
+
+        # validate atom and atompair input dimensions
+
+        assert atom_inputs.shape[-1] == self.dim_atom_inputs, f'expected {self.dim_atom_inputs} for atom_inputs feature dimension, but received {atom_inputs.shape[-1]}'
+        assert atompair_inputs.shape[-1] == self.dim_atompair_inputs, f'expected {self.dim_atompair_inputs} for atompair_inputs feature dimension, but received {atompair_inputs.shape[-1]}'
 
         # soft validate
 
@@ -3430,8 +3461,7 @@ class Alphafold3(Module):
             atom_inputs = atom_inputs,
             atompair_inputs = atompair_inputs,
             atom_mask = atom_mask,
-            is_molecule_types = is_molecule_types,
-            additional_molecule_feats = additional_molecule_feats,
+            additional_token_feats = additional_token_feats,
             molecule_atom_lens = molecule_atom_lens,
             molecule_ids = molecule_ids
         )
@@ -3458,6 +3488,19 @@ class Alphafold3(Module):
         relative_position_encoding = self.relative_position_encoding(
             additional_molecule_feats = additional_molecule_feats
         )
+
+        # only apply relative positional encodings to biomolecules that are chained
+        # not to ligands + metal ions
+
+        is_chained_biomol = is_molecule_types[..., :3].any(dim = -1) # first three types are chained biomolecules (protein, rna, dna)
+        paired_is_chained_biomol = einx.logical_and('b i, b j -> b i j', is_chained_biomol, is_chained_biomol)
+
+        relative_position_encoding = einx.where(
+            'b i j, b i j d, -> b i j d',
+            paired_is_chained_biomol, relative_position_encoding, 0.
+        )
+
+        # add relative positional encoding to pairwise init
 
         pairwise_init = pairwise_init + relative_position_encoding
 

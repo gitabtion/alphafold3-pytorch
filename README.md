@@ -55,6 +55,7 @@ atom_inputs = torch.randn(2, atom_seq_len, 77)
 atompair_inputs = torch.randn(2, atom_seq_len, atom_seq_len, 5)
 
 additional_molecule_feats = torch.randint(0, 2, (2, seq_len, 5))
+additional_token_feats = torch.randn(2, seq_len, 2)
 is_molecule_types = torch.randint(0, 2, (2, seq_len, 4)).bool()
 molecule_ids = torch.randint(0, 32, (2, seq_len))
 
@@ -84,6 +85,7 @@ loss = alphafold3(
     molecule_ids = molecule_ids,
     molecule_atom_lens = molecule_atom_lens,
     additional_molecule_feats = additional_molecule_feats,
+    additional_token_feats = additional_token_feats,
     is_molecule_types = is_molecule_types,
     msa = msa,
     msa_mask = msa_mask,
@@ -110,6 +112,7 @@ sampled_atom_pos = alphafold3(
     molecule_ids = molecule_ids,
     molecule_atom_lens = molecule_atom_lens,
     additional_molecule_feats = additional_molecule_feats,
+    additional_token_feats = additional_token_feats,
     is_molecule_types = is_molecule_types,
     msa = msa,
     msa_mask = msa_mask,
@@ -122,7 +125,15 @@ sampled_atom_pos.shape # (2, <atom_seqlen>, 3)
 
 ## Data preparation
 
-To acquire the AlphaFold 3 PDB dataset, first download all complexes in the Protein Data Bank (PDB), and then preprocess them with the script referenced below. The PDB can be downloaded from the RCSB: https://www.wwpdb.org/ftp/pdb-ftp-sites#rcsbpdb. The script below assumes you have downloaded the PDB in the **mmCIF file format** (e.g., placing it at `data/mmCIF/` by default). On the RCSB website, navigate down to "Download Protocols", and follow the download instructions depending on your location.
+### PDB dataset curation
+
+To acquire the AlphaFold 3 PDB dataset, first download all complexes in the Protein Data Bank (PDB), and then preprocess them with the script referenced below. The PDB can be downloaded from the RCSB: https://www.wwpdb.org/ftp/pdb-ftp-sites#rcsbpdb. The Python script below (i.e., `filter_pdb_mmcifs.py`) assumes you have downloaded the PDB in the **mmCIF file format**, placing it at `data/pdb_data/unfiltered_mmcifs/`. On the RCSB website, navigate down to "Download Protocols", and follow the download instructions depending on your location.
+
+For example, one can use the following command to download the PDB as a collection of mmCIF files:
+```bash
+rsync -rlpt -v -z --delete --port=33444 \
+rsync.rcsb.org::ftp_data/structures/divided/mmCIF/ ./data/pdb_data/unfiltered_mmcifs/
+```
 
 > WARNING: Downloading PDB can take up to 1TB of space.
 
@@ -141,16 +152,44 @@ In this directory, unzip all the files:
 find . -type f -name "*.gz" -exec gzip -d {} \;
 ```
 
-Next run the commands `wget -P data/CCD/ https://files.wwpdb.org/pub/pdb/data/monomers/components.cif.gz` and `wget -P data/CCD/ https://files.wwpdb.org/pub/pdb/data/component-models/complete/chem_comp_model.cif.gz` from the project's root directory to download the latest version of the PDB's Chemical Component Dictionary (CCD) and its structural models. Extract each of these files using the command `find data/CCD/ -type f -name "*.gz" -exec gzip -d {} \;`.
-
-Then run the following with <pdb_dir>, <ccd_dir>, and <output_dir> replaced with the locations of your local copies of the PDB, CCD, and your desired dataset output directory (e.g., `data/PDB_set/` by default).
+Next run the commands
 ```bash
-python alphafold3_pytorch/pdb_dataset_curation.py --mmcif_dir <pdb_dir> --ccd_dir <ccd_dir> --output_dir <output_dir>
+wget -P ./data/ccd_data/ https://files.wwpdb.org/pub/pdb/data/monomers/components.cif.gz
+wget -P ./data/ccd_data/ https://files.wwpdb.org/pub/pdb/data/component-models/complete/chem_comp_model.cif.gz
+```
+from the project's root directory to download the latest version of the PDB's Chemical Component Dictionary (CCD) and its structural models. Extract each of these files using the following command:
+```bash
+find data/ccd_data/ -type f -name "*.gz" -exec gzip -d {} \;
+```
+
+### PDB dataset filtering
+
+Then run the following with `pdb_dir`, `ccd_dir`, and `mmcif_output_dir` replaced with the locations of your local copies of the PDB, CCD, and your desired dataset output directory (i.e., `./data/pdb_data/unfiltered_mmcifs/`, `./data/ccd_data/`, and `./data/pdb_data/mmcifs/`).
+```bash
+python scripts/filter_pdb_mmcifs.py --mmcif_dir <pdb_dir> --ccd_dir <ccd_dir> --output_dir <mmcif_output_dir>
 ```
 
 See the script for more options. Each mmCIF that successfully passes
-all processing steps will be written to <output_dir> within a subdirectory
-named using the mmCIF's second and third PDB ID characters (e.g. `5c`).
+all processing steps will be written to `mmcif_output_dir` within a subdirectory
+named according to the mmCIF's second and third PDB ID characters (e.g. `5c`).
+
+### PDB dataset clustering
+
+Next, run the following with `mmcif_dir` and `clustering_output_dir` replaced, respectively, with your local output directory created using the dataset filtering script above and with your desired clustering output directory (i.e., `./data/pdb_data/mmcifs/` and `./data/pdb_data/data_caches/clusterings/`):
+```bash
+python scripts/cluster_pdb_mmcifs.py --mmcif_dir <mmcif_dir> --output_dir <clustering_output_dir> --clustering_filtered_pdb_dataset
+```
+
+**Note**: The `--clustering_filtered_pdb_dataset` flag is recommended when clustering the filtered PDB dataset as curated using the script above, as this flag will enable faster runtimes in this context (since filtering leaves each chain's residue IDs 1-based). However, this flag must **not** be provided when clustering other (i.e., non-PDB) datasets of mmCIF files. Otherwise, interface clustering may be performed incorrectly, as these datasets' mmCIF files may not use strict 1-based residue indexing for each chain.
+
+### PDB dataset caching (WIP)
+
+Now, run the following with `pdb_dir` and `cache_output_path` replaced with the location of your local copy of the PDB and your desired dataset cache output filepath (i.e., `./data/pdb_data/mmcifs/` and `./data/pdb_data/data_caches/chain_data_cache.json`).
+```bash
+python scripts/generate_mmcif_cache.py --mmcif_dir <pdb_dir> --output_path <cache_output_path>
+```
+
+See the script above for more options.
 
 ## Contributing
 

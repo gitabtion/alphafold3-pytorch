@@ -1,17 +1,22 @@
-from functools import wraps
-from environs import Env
-
-from torch import Tensor
+import numpy as np
 
 from beartype import beartype
 from beartype.door import is_bearable
 
+from Bio.PDB.Atom import Atom, DisorderedAtom
+from Bio.PDB.Chain import Chain
+from Bio.PDB.Residue import DisorderedResidue, Residue
+
+from environs import Env
 from jaxtyping import (
     Float,
     Int,
     Bool,
+    Shaped,
     jaxtyped
 )
+
+from torch import Tensor
 
 # environment
 
@@ -37,9 +42,18 @@ class TorchTyping:
     def __getitem__(self, shapes: str):
         return self.abstract_dtype[Tensor, shapes]
 
-Float = TorchTyping(Float)
-Int   = TorchTyping(Int)
-Bool  = TorchTyping(Bool)
+Shaped = TorchTyping(Shaped)
+Float  = TorchTyping(Float)
+Int    = TorchTyping(Int)
+Bool   = TorchTyping(Bool)
+
+# helper type aliases
+
+IntType = int | np.int32 | np.int64
+AtomType = Atom | DisorderedAtom
+ResidueType = Residue | DisorderedResidue
+ChainType = Chain
+TokenType = AtomType | ResidueType
 
 # use env variable TYPECHECK to control whether to use beartype + jaxtyping
 
@@ -50,6 +64,7 @@ typecheck = jaxtyped(typechecker = beartype) if should_typecheck else identity
 beartype_isinstance = is_bearable if should_typecheck else always(True)
 
 __all__ = [
+    Shaped,
     Float,
     Int,
     Bool,

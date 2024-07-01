@@ -11,6 +11,7 @@ from einops import einsum, repeat, rearrange, pack, unpack
 from einops.layers.torch import Rearrange
 
 from alphafold3_pytorch.tensor_typing import (
+    Shaped,
     Float,
     Int,
     Bool,
@@ -40,6 +41,9 @@ def pack_one(t, pattern):
 
 def unpack_one(t, ps, pattern):
     return unpack(t, ps, pattern)[0]
+
+def softclamp(t, value):
+    return (t / value).tanh() * value
 
 @typecheck
 def pad_at_dim(
@@ -118,9 +122,9 @@ def concat_previous_window(
 
 @typecheck
 def full_pairwise_repr_to_windowed(
-    pairwise_repr: Float['... m m dp'],
+    pairwise_repr: Shaped['... m m dp'],
     window_size: int
-) -> Float['... n w (w*2) dp']:
+) -> Shaped['... n w (w*2) dp']:
 
     seq_len, device = pairwise_repr.shape[-2], pairwise_repr.device
 
@@ -142,9 +146,9 @@ def full_pairwise_repr_to_windowed(
 
 @typecheck
 def full_attn_bias_to_windowed(
-    attn_bias: Float['... m m'],
+    attn_bias: Shaped['... m m'],
     window_size: int
-) -> Float['... n w (w*2)']:
+) -> Shaped['... n w (w*2)']:
 
     attn_bias = rearrange(attn_bias, '... -> ... 1')
     attn_bias = full_pairwise_repr_to_windowed(attn_bias, window_size = window_size)
@@ -163,10 +167,12 @@ class Attention(Module):
         dropout = 0.,
         gate_output = True,
         query_bias = True,
-        flash = True,
+        flash = False,
         window_size = None,
         num_memory_kv: int = 0,
         efficient_attn_config: Config = Config(True, True, True),
+        enable_attn_softclamp = False,
+        attn_softclamp_value = 30.,
         mla = False,
         mla_rank = 64,
     ):
@@ -190,7 +196,9 @@ class Attention(Module):
             flash = flash,
             dropout = dropout,
             window_size = window_size,
-            attn_config = efficient_attn_config
+            attn_config = efficient_attn_config,
+            enable_attn_softclamp = enable_attn_softclamp,
+            attn_softclamp_value = attn_softclamp_value,
         )
 
         self.split_heads = Rearrange('b n (h d) -> b h n d', h = heads)
@@ -284,7 +292,9 @@ class Attend(Module):
         flash = False,
         window_size = None,
         scale: float | None = None,
-        attn_config: Config = Config(True, True, True)
+        attn_config: Config = Config(True, True, True),
+        enable_attn_softclamp = False,
+        attn_softclamp_value = 30.
     ):
         super().__init__()
         """
@@ -309,6 +319,14 @@ class Attend(Module):
         self.flash = flash
         self.attn_config = attn_config
         self.attn_dropout = nn.Dropout(dropout)
+
+        assert not (flash and enable_attn_softclamp), 'softclamp of attn logits not compatible with flash yet'
+
+        # softclamp attention logits
+        # being adopted by a number of recent llms (gemma, grok)
+
+        self.enable_attn_softclamp = enable_attn_softclamp
+        self.attn_softclamp_value = attn_softclamp_value
 
     @typecheck
     def flash_attn(
@@ -414,7 +432,7 @@ class Attend(Module):
 
         # similarity
 
-        sim = einsum(q, k, "... i d, ... j d -> ... i j")
+        sim = einsum(q, k, '... i d, ... j d -> ... i j')
 
         if exists(attn_bias):
             if attn_bias.ndim == 4:
@@ -422,6 +440,11 @@ class Attend(Module):
 
             assert attn_bias.ndim == sim.ndim
             sim = sim + attn_bias
+
+        # maybe softclamp
+
+        if self.enable_attn_softclamp:
+            sim = softclamp_value(sim, self.attn_softclamp_value)
 
         # windowed masking - for masking out atoms not belonging to the same molecule / polypeptide / nucleic acid in sequence-local attention
 
@@ -518,6 +541,11 @@ class Attend(Module):
 
         if exists(attn_bias):
             sim = sim + attn_bias
+
+        # maybe softclamp
+
+        if self.enable_attn_softclamp:
+            sim = softclamp_value(sim, self.attn_softclamp_value)
 
         # masking
 
