@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import wraps, partial
 from dataclasses import dataclass, asdict, field
-from typing import Type, Literal, Callable, List, Any
+from typing import Type, Literal, Callable, List, Any, Tuple
 
 import torch
 from torch import tensor
@@ -126,7 +126,14 @@ class BatchedAtomInput:
         return asdict(self)
 
 # molecule input - accepting list of molecules as rdchem.Mol + the atomic lengths for how to pool into tokens
- 
+
+def default_extract_atom_feats_fn(atom):
+    return [
+        atom.GetFormalCharge(),
+        atom.GetImplicitValence(),
+        atom.GetExplicitValence()
+    ]
+
 @typecheck
 @dataclass
 class MoleculeInput:
@@ -151,6 +158,7 @@ class MoleculeInput:
     resolved_labels:            Int[' n'] | None = None
     add_atom_ids:               bool = False
     add_atompair_ids:           bool = False
+    extract_atom_feats_fn:      Callable[[Any], List[float]] = default_extract_atom_feats_fn
 
 @typecheck
 def molecule_to_atom_input(
@@ -161,6 +169,7 @@ def molecule_to_atom_input(
 
     molecules = i.molecules
     atom_lens = i.molecule_token_pool_lens
+    extract_atom_feats_fn = i.extract_atom_feats_fn
 
     # get total number of atoms
 
@@ -273,11 +282,7 @@ def molecule_to_atom_input(
         atom_feats = []
 
         for atom in atoms:
-            atom_feats.append([
-                atom.GetFormalCharge(),
-                atom.GetImplicitValence(),
-                atom.GetExplicitValence(),
-            ])
+            atom_feats.append(extract_atom_feats_fn(atom))
 
         atom_inputs.extend(atom_feats)
 
@@ -345,7 +350,7 @@ class Alphafold3Input:
     ligands:                    List[Mol | str] = imm_list() # can be given as smiles
     ds_dna:                     List[Int[' _'] | str] = imm_list()
     ds_rna:                     List[Int[' _'] | str] = imm_list()
-    atom_parent_ids:            Int['m'] | None = None
+    atom_parent_ids:            Int[' m'] | None = None
     additional_token_feats:     Float[f'n dtf'] | None = None
     templates:                  Float['t n n dt'] | None = None
     msa:                        Float['s n dm'] | None = None
@@ -359,6 +364,7 @@ class Alphafold3Input:
     add_atom_ids:               bool = False
     add_atompair_ids:           bool = False
     add_output_atompos_indices: bool = True
+    extract_atom_feats_fn:      Callable[[Any], List[float]] = default_extract_atom_feats_fn
 
 @typecheck
 def map_int_or_string_indices_to_mol(
@@ -502,7 +508,7 @@ def alphafold3_input_to_molecule_input(
     # convert ligands to rdchem.Mol
 
     ligands = list(alphafold3_input.ligands)
-    mol_ligands = [(mol_from_smile(l) if isinstance(l, str) else l) for l in ligands]
+    mol_ligands = [(mol_from_smile(ligand) if isinstance(ligand, str) else ligand) for ligand in ligands]
 
     # create the molecule input
 
@@ -637,7 +643,7 @@ def alphafold3_input_to_molecule_input(
     num_protein_atoms = get_num_atoms_per_chain(mol_proteins)
     num_ss_rna_atoms = get_num_atoms_per_chain(mol_ss_rnas)
     num_ss_dna_atoms = get_num_atoms_per_chain(mol_ss_dnas)
-    num_ligand_atoms = [l.GetNumAtoms() for l in mol_ligands]
+    num_ligand_atoms = [ligand.GetNumAtoms() for ligand in mol_ligands]
 
     atom_counts = [*num_protein_atoms, *num_ss_rna_atoms, *num_ss_dna_atoms, *num_ligand_atoms, num_metal_ions]
 
@@ -659,7 +665,7 @@ def alphafold3_input_to_molecule_input(
     num_protein_tokens = [len(protein) for protein in proteins]
     num_ss_rna_tokens = [len(rna) for rna in ss_rnas]
     num_ss_dna_tokens = [len(dna) for dna in ss_dnas]
-    num_ligand_tokens = [l.GetNumAtoms() for l in mol_ligands]
+    num_ligand_tokens = [ligand.GetNumAtoms() for ligand in mol_ligands]
 
     token_repeats = tensor([*num_protein_tokens, *num_ss_rna_tokens, *num_ss_dna_tokens, *num_ligand_tokens, num_metal_ions])
 
@@ -788,7 +794,7 @@ def alphafold3_input_to_molecule_input(
         atom_parent_ids = atom_parent_ids,
         add_atom_ids = i.add_atom_ids,
         add_atompair_ids = i.add_atompair_ids,
-
+        extract_atom_feats_fn = i.extract_atom_feats_fn
     )
 
     return molecule_input

@@ -444,7 +444,7 @@ class Attend(Module):
         # maybe softclamp
 
         if self.enable_attn_softclamp:
-            sim = softclamp_value(sim, self.attn_softclamp_value)
+            sim = softclamp(sim, self.attn_softclamp_value)
 
         # windowed masking - for masking out atoms not belonging to the same molecule / polypeptide / nucleic acid in sequence-local attention
 
@@ -545,7 +545,7 @@ class Attend(Module):
         # maybe softclamp
 
         if self.enable_attn_softclamp:
-            sim = softclamp_value(sim, self.attn_softclamp_value)
+            sim = softclamp(sim, self.attn_softclamp_value)
 
         # masking
 
