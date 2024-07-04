@@ -3712,6 +3712,8 @@ class Alphafold3(Module):
                     pde_labels,
                     plddt_labels,
                     resolved_labels,
+                    frame_indices,
+                    frame_mask,
 
                 ) = tuple(
                     maybe(repeat)(t, 'b ... -> (b a) ...', a = num_augs)
@@ -3734,7 +3736,9 @@ class Alphafold3(Module):
                         pae_labels,
                         pde_labels,
                         plddt_labels,
-                        resolved_labels
+                        resolved_labels,
+                        frame_indices,
+                        frame_mask,
                     )
                 )
 
@@ -3778,8 +3782,11 @@ class Alphafold3(Module):
 
         # confidence head
 
-        should_call_confidence_head = any([*map(exists, confidence_head_labels)])
-        return_pae_logits = exists(pae_labels)
+        # should_call_confidence_head = any([*map(exists, confidence_head_labels)])
+        # return_pae_logits = exists(pae_labels)
+        
+        should_call_confidence_head = True
+        return_pae_logits = exists(frame_indices)
 
         if calc_diffusion_loss and should_call_confidence_head:
 
@@ -3816,7 +3823,7 @@ class Alphafold3(Module):
 
             # calculate pae labels
             if frame_indices is not None:
-                pred_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', pred_atom_pos, frame_indices)
+                pred_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', denoised_atom_pos, frame_indices)
                 gt_frame_atoms = einx.get_at('b [m] c, b n d -> b n d c', atom_pos, frame_indices)
                 pae_labels =  compute_pae_labels(pred_atom_pos, molecule_pos, pred_frame_atoms, gt_frame_atoms, frame_mask, ignore, conf_head_dist_bins)
                 pae_labels = torch.where(pairwise_mask, pae_labels, ignore)

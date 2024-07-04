@@ -842,7 +842,7 @@ if __name__ == "__main__":
 
     args_tuples = [
         (filepath, args.output_dir)
-        for filepath in glob.glob(os.path.join(args.mmcif_dir, "*", "*.cif"))
+        for filepath in glob.glob(os.path.join(args.mmcif_dir, "*.cif"))
         if not (
             args.skip_existing and os.path.exists(
                 os.path.join(

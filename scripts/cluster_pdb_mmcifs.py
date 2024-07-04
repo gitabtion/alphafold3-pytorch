@@ -272,18 +272,26 @@ def parse_chain_sequences_and_interfaces_from_mmcif_directory(
     as well as a set of chain ID pairs denoting structural interfaces for each complex."""
     all_chain_sequences = []
     all_interface_chain_ids = {}
+    error_filepaths = []
 
     mmcif_filepaths = list(glob.glob(os.path.join(mmcif_dir, "*", "*.cif")))
     for cif_filepath in tqdm(mmcif_filepaths, desc="Parsing chain sequences"):
-        structure_id = os.path.splitext(os.path.basename(cif_filepath))[0]
-        (
-            chain_sequences,
-            interface_chain_ids,
-        ) = parse_chain_sequences_and_interfaces_from_mmcif_file(
-            cif_filepath, assume_one_based_residue_ids=assume_one_based_residue_ids
-        )
-        all_chain_sequences.append({structure_id: chain_sequences})
-        all_interface_chain_ids[structure_id] = list(interface_chain_ids)
+        try:
+            structure_id = os.path.splitext(os.path.basename(cif_filepath))[0]
+            (
+                chain_sequences,
+                interface_chain_ids,
+            ) = parse_chain_sequences_and_interfaces_from_mmcif_file(
+                cif_filepath, assume_one_based_residue_ids=assume_one_based_residue_ids
+            )
+            all_chain_sequences.append({structure_id: chain_sequences})
+            all_interface_chain_ids[structure_id] = list(interface_chain_ids)
+        except Exception as e:
+            logger.error(f"Error parsing {cif_filepath}: {e}")
+            error_filepaths.append(cif_filepath)
+        
+    with open('cluster_error_files.txt', 'w') as f:
+        f.write('\n'.join(error_filepaths))
 
     return all_chain_sequences, all_interface_chain_ids
 
