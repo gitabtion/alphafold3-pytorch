@@ -91,6 +91,8 @@ class AtomInput:
     pde_labels:                 Int['n n'] | None = None
     plddt_labels:               Int[' n'] | None = None
     resolved_labels:            Int[' n'] | None = None
+    frame_indices:              Float['n 3'] | None=None
+    frame_mask:                 Bool['n'] | None=None
 
     def dict(self):
         return asdict(self)
@@ -121,6 +123,8 @@ class BatchedAtomInput:
     pde_labels:                 Int['b n n'] | None = None
     plddt_labels:               Int['b n'] | None = None
     resolved_labels:            Int['b n'] | None = None
+    frame_indices:              Float['b n 3'] | None=None
+    frame_mask:                 Bool['b n'] | None=None
 
     def dict(self):
         return asdict(self)
