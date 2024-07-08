@@ -2948,13 +2948,13 @@ def compute_pae_labels(pred_coords: Float['b n 3'],
                        true_frames: Float['b n 3 3'],
                        frame_mask: Bool['b n'] | None = None,
                        ignore_index: int = -100,
-                       dist_bins=torch.linspace(0.5, 32, 64)) -> Int['b n']:
+                       dist_bins=torch.linspace(0.5, 32, 64)) -> Int['b n n']:
     pae_dist_fn = ComputeAlignmentError()
     pae_dist = pae_dist_fn(pred_coords, true_coords, pred_frames, true_frames)
-    pae_dist_from_dist_bins = einx.subtract('b m, dist_bins -> b m dist_bins', pae_dist, dist_bins.to(pred_coords.device)).abs()
+    pae_dist_from_dist_bins = einx.subtract('b n m, dist_bins -> b n m dist_bins', pae_dist, dist_bins.to(pred_coords.device)).abs()
     pae_labels = pae_dist_from_dist_bins.argmin(dim = -1)
     if frame_mask is not None:
-        pae_labels = torch.where(frame_mask, pae_labels, ignore_index)
+        pae_labels = torch.where(rearrange(frame_mask, '... n -> ... 1 n'), pae_labels, ignore_index)
     return pae_labels
 
 @typecheck
