@@ -123,6 +123,75 @@ sampled_atom_pos = alphafold3(
 sampled_atom_pos.shape # (2, <atom_seqlen>, 3)
 ```
 
+An example with molecule level input handling
+
+```python
+import torch
+
+from alphafold3_pytorch import (
+    Alphafold3,
+    Alphafold3Input,
+    alphafold3_inputs_to_batched_atom_input
+)
+
+contrived_protein = 'AG'
+
+mock_atompos = [
+    torch.randn(6, 3),   # alanine has 6 non-hydrogen atoms
+    torch.randn(5, 3)    # glycine has 5 non-hydrogen atoms
+]
+
+train_alphafold3_input = Alphafold3Input(
+    proteins = [contrived_protein],
+    atom_pos = mock_atompos
+)
+
+eval_alphafold3_input = Alphafold3Input(
+    proteins = [contrived_protein]
+)
+
+batched_atom_input = alphafold3_inputs_to_batched_atom_input(train_alphafold3_input, atoms_per_window = 27)
+
+# training
+
+alphafold3 = Alphafold3(
+    dim_atom_inputs = 3,
+    dim_atompair_inputs = 1,
+    atoms_per_window = 27,
+    dim_template_feats = 44,
+    num_dist_bins = 38,
+    confidence_head_kwargs = dict(
+        pairformer_depth = 1
+    ),
+    template_embedder_kwargs = dict(
+        pairformer_stack_depth = 1
+    ),
+    msa_module_kwargs = dict(
+        depth = 1
+    ),
+    pairformer_stack = dict(
+        depth = 2
+    ),
+    diffusion_module_kwargs = dict(
+        atom_encoder_depth = 1,
+        token_transformer_depth = 1,
+        atom_decoder_depth = 1,
+    )
+)
+
+loss = alphafold3(**batched_atom_input.dict())
+loss.backward()
+
+# sampling
+
+batched_eval_atom_input = alphafold3_inputs_to_batched_atom_input(eval_alphafold3_input, atoms_per_window = 27)
+
+alphafold3.eval()
+sampled_atom_pos = alphafold3(**batched_eval_atom_input.dict())
+
+assert sampled_atom_pos.shape == (1, (6 + 5), 3)
+```
+
 ## Data preparation
 
 ### PDB dataset curation
@@ -181,15 +250,6 @@ python scripts/cluster_pdb_mmcifs.py --mmcif_dir <mmcif_dir> --output_dir <clust
 ```
 
 **Note**: The `--clustering_filtered_pdb_dataset` flag is recommended when clustering the filtered PDB dataset as curated using the script above, as this flag will enable faster runtimes in this context (since filtering leaves each chain's residue IDs 1-based). However, this flag must **not** be provided when clustering other (i.e., non-PDB) datasets of mmCIF files. Otherwise, interface clustering may be performed incorrectly, as these datasets' mmCIF files may not use strict 1-based residue indexing for each chain.
-
-### PDB dataset caching (WIP)
-
-Now, run the following with `pdb_dir` and `cache_output_path` replaced with the location of your local copy of the PDB and your desired dataset cache output filepath (i.e., `./data/pdb_data/mmcifs/` and `./data/pdb_data/data_caches/chain_data_cache.json`).
-```bash
-python scripts/generate_mmcif_cache.py --mmcif_dir <pdb_dir> --output_path <cache_output_path>
-```
-
-See the script above for more options.
 
 ## Contributing
 

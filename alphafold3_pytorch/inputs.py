@@ -12,6 +12,10 @@ import einx
 from rdkit.Chem import AllChem as Chem
 from rdkit.Chem.rdchem import Atom, Mol
 
+from alphafold3_pytorch.attention import (
+    pad_to_length
+)
+
 from alphafold3_pytorch.tensor_typing import (
     typecheck,
     beartype_isinstance,
@@ -180,6 +184,7 @@ class MoleculeInput:
     resolved_labels:            Int[' n'] | None = None
     add_atom_ids:               bool = False
     add_atompair_ids:           bool = False
+    directed_bonds:             bool = False
     extract_atom_feats_fn:      Callable[[Atom], Float['m dai']] = default_extract_atom_feats_fn
     extract_atompair_feats_fn:  Callable[[Mol], Float['m m dapi']] = default_extract_atompair_feats_fn
 
@@ -247,6 +252,8 @@ def molecule_to_atom_input(
 
     if i.add_atompair_ids:
         atom_bond_index = {symbol: (idx + 1) for idx, symbol in enumerate(ATOM_BONDS)}
+        num_atom_bond_types = len(atom_bond_index)
+
         other_index = len(ATOM_BONDS) + 1
 
         atompair_ids = torch.zeros(total_atoms, total_atoms).long()
@@ -284,7 +291,17 @@ def molecule_to_atom_input(
                 bond_type = bond.GetBondType()
                 bond_id = atom_bond_index.get(bond_type, other_index) + 1
 
-                updates.extend([bond_id, bond_id])
+                # default to symmetric bond type (undirected atom bonds)
+
+                bond_to = bond_from = bond_id
+
+                # if allowing for directed bonds, assume num_atompair_embeds = (2 * num_atom_bond_types) + 1
+                # offset other edge by num_atom_bond_types
+
+                if i.directed_bonds:
+                    bond_from += num_atom_bond_types
+
+                updates.extend([bond_to, bond_from])
 
             coordinates = tensor(coordinates).long()
             updates = tensor(updates).long()
@@ -376,6 +393,7 @@ class Alphafold3Input:
     templates:                  Float['t n n dt'] | None = None
     msa:                        Float['s n dm'] | None = None
     atom_pos:                   List[Float['_ 3']] | Float['m 3'] | None = None
+    reorder_atom_pos:           bool = True
     template_mask:              Bool[' t'] | None = None
     msa_mask:                   Bool[' s'] | None = None
     distance_labels:            Int['n n'] | None = None
@@ -385,6 +403,7 @@ class Alphafold3Input:
     add_atom_ids:               bool = False
     add_atompair_ids:           bool = False
     add_output_atompos_indices: bool = True
+    directed_bonds:             bool = False
     extract_atom_feats_fn:      Callable[[Atom], Float['m dai']] = default_extract_atom_feats_fn
     extract_atompair_feats_fn:  Callable[[Mol], Float['m m dapi']] = default_extract_atompair_feats_fn
 
@@ -774,6 +793,8 @@ def alphafold3_input_to_molecule_input(
 
         if i.add_output_atompos_indices:
             offset = 0
+
+            reorder_atompos_indices = []
             output_atompos_indices = []
 
             for chain in chainable_biomol_entries:
@@ -789,12 +810,26 @@ def alphafold3_input_to_molecule_input(
                         atom_reorder_indices = atom_reorder_indices[:-1]
 
                     reorder_back_indices = atom_reorder_indices.argsort()
+
                     output_atompos_indices.append(reorder_back_indices + offset)
+                    reorder_atompos_indices.append(atom_reorder_indices + offset)
 
                     offset += num_atoms
 
             output_atompos_indices = torch.cat(output_atompos_indices, dim = -1)
-            output_atompos_indices = F.pad(output_atompos_indices, (0, total_atoms - output_atompos_indices.shape[-1]), value = -1)
+            output_atompos_indices = pad_to_length(output_atompos_indices, total_atoms, value = -1)
+
+        # if atom positions are passed in, need to be reordered for the bonds between residues / nucleotides to be contiguous
+        # todo - fix to have no reordering needed (bonds are built not contiguous, just hydroxyl removed)
+
+        if i.reorder_atom_pos:
+            orig_order = torch.arange(total_atoms)
+            reorder_atompos_indices = torch.cat(reorder_atompos_indices, dim = -1)
+            reorder_atompos_indices = pad_to_length(reorder_atompos_indices, total_atoms, value = -1)
+
+            reorder_indices = torch.where(reorder_atompos_indices != -1, reorder_atompos_indices, orig_order)
+
+            atom_pos = atom_pos[reorder_indices]
 
     # create molecule input
 
@@ -816,6 +851,7 @@ def alphafold3_input_to_molecule_input(
         atom_parent_ids = atom_parent_ids,
         add_atom_ids = i.add_atom_ids,
         add_atompair_ids = i.add_atompair_ids,
+        directed_bonds = i.directed_bonds,
         extract_atom_feats_fn = i.extract_atom_feats_fn,
         extract_atompair_feats_fn = i.extract_atompair_feats_fn
     )
