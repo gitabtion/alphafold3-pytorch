@@ -1,5 +1,5 @@
 
-ARG PYTORCH_TAG=2.3.0-cuda12.1-cudnn8-runtime
+ARG PYTORCH_TAG=PYTORCH_TAG=2.3.1-cuda12.1-cudnn8-devel
 FROM pytorch/pytorch:${PYTORCH_TAG}
 
 ## Add System Dependencies
@@ -23,10 +23,11 @@ RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
     wandb \
     pyscf \
     tensorboard \
-    tensorboardX
+    tensorboardX \
+    rootutils
 
 ## Change working directory
-WORKDIR /app/alphafold
+WORKDIR /app/opensource/alphafold
 
 ## Clone and install the package + requirements
 ARG GIT_TAG=carsifold
