@@ -179,7 +179,7 @@ class Attention(Module):
         num_memory_kv: int = 0,
         enable_attn_softclamp = False,
         attn_softclamp_value = 50.,
-        init_gate_bias = -2.
+        init_gate_bias = -2.,
         mla = False,
         mla_rank = 64,
     ):
