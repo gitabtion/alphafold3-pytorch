@@ -36,6 +36,7 @@ from tqdm import tqdm
 
 from alphafold3_pytorch.data import mmcif_parsing
 from alphafold3_pytorch.tensor_typing import IntType, typecheck
+from alphafold3_pytorch.utils.data_utils import RESIDUE_MOLECULE_TYPE, get_residue_molecule_type
 from alphafold3_pytorch.utils.utils import np_mode
 
 # Constants
@@ -43,7 +44,6 @@ from alphafold3_pytorch.utils.utils import np_mode
 CHAIN_SEQUENCES = List[Dict[str, Dict[str, str]]]
 CHAIN_INTERFACES = Dict[str, List[str]]
 INTERFACE_CLUSTERS = Dict[str, str]
-RESIDUE_MOLECULE_TYPE = Literal["protein", "rna", "dna", "ligand"]
 CLUSTERING_MOLECULE_TYPE = Literal["protein", "nucleic_acid", "peptide", "ligand", "unknown"]
 
 PROTEIN_LETTERS_3TO1 = {k.strip(): v.strip() for k, v in PDBData.protein_letters_3to1.items()}
@@ -74,20 +74,6 @@ DNA_LETTERS_1TO3 = {
 
 
 # Helper functions
-
-
-@typecheck
-def get_residue_molecule_type(res_chem_type: str) -> RESIDUE_MOLECULE_TYPE:
-    """Get the molecule type of a residue."""
-    if "peptide" in res_chem_type.lower():
-        return "protein"
-    elif "rna" in res_chem_type.lower():
-        return "rna"
-    elif "dna" in res_chem_type.lower():
-        return "dna"
-    else:
-        return "ligand"
-
 
 @typecheck
 def convert_modified_residue_three_to_one(
@@ -248,9 +234,9 @@ def parse_chain_sequences_and_interfaces_from_mmcif(
                     if f"{neighbor_interface_key}+{atom_interface_key}" not in interface_chain_ids:
                         interface_chain_ids.add(f"{atom_interface_key}+{neighbor_interface_key}")
 
-        assert (
-            len(one_letter_seq_tokens) > 0
-        ), f"No residues found in chain {chain.id} within the mmCIF file {filepath}."
+        if not one_letter_seq_tokens:
+            # NOTE: This indicates that the current chain consists of only ligand residues
+            continue
 
         unique_token_molecule_types = set(token_molecule_types)
         if len(unique_token_molecule_types) > 1:
@@ -358,9 +344,27 @@ def write_sequences_to_fasta(
                         )
                         molecule_id = f"{structure_id}{chain_id_}:{molecule_type_and_name[0]}{molecule_index_postfix}"
 
-                        f.write(f">{molecule_id}\n{sequence}\n")
+                        mapped_sequence = (
+                            sequence.replace("X", "N")
+                            if molecule_type == "nucleic_acid"
+                            else sequence
+                        )
+                        f.write(f">{molecule_id}\n{mapped_sequence}\n")
                         molecule_ids.append(molecule_id)
     return molecule_ids
+
+
+@typecheck
+def extract_pdb_chain_and_molecule_ids_from_clustering_string(x: str) -> Tuple[str, str, str]:
+    """Extract PDB, chain, and molecule IDs from a clustering output string."""
+    pdb_id = (
+        x.split(":")[0].split("-assembly1")[0] + "-assembly1"
+        if "-assembly1" in x
+        else x.split(":")[0][:4]
+    )
+    chain_id = x.split(":")[0].split("-assembly1")[1] if "assembly1" in x else x.split(":")[0][4:]
+    molecule_id = x.split(":")[1]
+    return pdb_id, chain_id, molecule_id
 
 
 @typecheck
@@ -425,7 +429,7 @@ def cluster_sequences_using_mmseqs2(
     # Cache chain cluster mappings to local (CSV) storage
     local_chain_cluster_mapping = pd.DataFrame(
         chain_cluster_mapping["cluster_member"]
-        .apply(lambda x: pd.Series((x[:4].split(":")[0], x[4:].split(":")[0], x.split(":")[1])))
+        .apply(lambda x: pd.Series(extract_pdb_chain_and_molecule_ids_from_clustering_string(x)))
         .values,
         columns=["pdb_id", "chain_id", "molecule_id"],
     )
@@ -468,7 +472,7 @@ def cluster_ligands_by_ccd_code(
     # Cache chain cluster mappings to local (CSV) storage
     local_chain_cluster_mapping = pd.DataFrame(
         [
-            (k[:4].split(":")[0], k[4:].split(":")[0], k.split(":")[1], v)
+            (*extract_pdb_chain_and_molecule_ids_from_clustering_string(k), v)
             for (k, v) in chain_cluster_mapping.items()
         ],
         columns=["pdb_id", "chain_id", "molecule_id", "cluster_id"],
@@ -656,6 +660,7 @@ if __name__ == "__main__":
     # Determine paths for intermediate files
 
     fasta_filepath = os.path.join(args.output_dir, "sequences.fasta")
+
     # Attempt to load existing chain sequences and interfaces from local storage
 
     if os.path.exists(
@@ -753,6 +758,8 @@ if __name__ == "__main__":
             coverage=0.8,
             coverage_mode=0,
             extra_parameters={
+                # force protein mode
+                "--dbtype": 1,
                 # cluster reassign improves clusters by reassigning sequences to the best cluster
                 # and fixes transitivity issues of the cascade clustering
                 "--cluster-reassign": 1,
@@ -772,6 +779,8 @@ if __name__ == "__main__":
             coverage=0.8,
             coverage_mode=0,
             extra_parameters={
+                # force nucleotide mode
+                "--dbtype": 2,
                 # 7 or 8 should work best, something to test
                 "-k": 8,
                 # there is currently an issue in mmseqs2 with nucleotide search and spaced k-mers
@@ -795,8 +804,9 @@ if __name__ == "__main__":
             coverage_mode=0,
             # some of these parameters are from the spacepharer optimized parameters
             # these were for short CRISPR spacer recognition, so they should work well for arbitrary peptides
-            # this is a adhoc solution, with some recent new introduction like the ungapped prefilter
             extra_parameters={
+                # force protein mode
+                "--dbtype": 1,
                 # spacepharer optimized parameters
                 "--gap-open": 16,
                 "--gap-extend": 2,
@@ -812,8 +822,9 @@ if __name__ == "__main__":
                 "--comp-bias-corr": 0,
                 # let more things through the prefilter
                 "--min-ungapped-score": 5,
-                # Try disabling completely with "inf"?
-                "-e": 1,
+                # Let's disable e-values as these are too short for reliable homology anyway
+                # The most we can do is to collapse nearly identical peptides
+                "-e": "inf",
                 # see above
                 "--cluster-reassign": 1,
             },
