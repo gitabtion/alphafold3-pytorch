@@ -5,7 +5,6 @@ from pathlib import Path
 from functools import partial, wraps
 from collections import namedtuple
 
-import einops
 import torch
 from torch import nn
 from torch import Tensor
@@ -3441,10 +3440,10 @@ class Alphafold3(Module):
         num_recycling_steps: int = 1,
         diffusion_add_bond_loss: bool = False,
         diffusion_add_smooth_lddt_loss: bool = False,
-        molecule_atom_indices: Int['b n'] | None = None,
+        distogram_atom_indices: Int['b n'] | None = None,
+        molecule_atom_indices: Int['b n'] | None = None, # the 'token centre atoms' mentioned in the paper, unsure where it is used in the architecture
         num_sample_steps: int | None = None,
         atom_pos: Float['b m 3'] | None = None,
-        output_atompos_indices: Int['b m'] | None = None,
         distance_labels: Int['b n n'] | None = None,
         pae_labels: Int['b n n'] | None = None,
         pde_labels: Int['b n n'] | None = None,
@@ -3474,6 +3473,10 @@ class Alphafold3(Module):
         if exists(molecule_atom_indices):
             molecule_atom_indices = molecule_atom_indices.masked_fill(~valid_atom_len_mask, 0)
             assert (molecule_atom_indices < molecule_atom_lens)[valid_atom_len_mask].all(), 'molecule_atom_indices cannot have an index that exceeds the length of the atoms for that molecule as given by molecule_atom_lens'
+
+        if exists(distogram_atom_indices):
+            distogram_atom_indices = distogram_atom_indices.masked_fill(~valid_atom_len_mask, 0)
+            assert (distogram_atom_indices < molecule_atom_lens)[valid_atom_len_mask].all(), 'distogram_atom_indices cannot have an index that exceeds the length of the atoms for that molecule as given by molecule_atom_lens'
 
         assert exists(molecule_atom_lens) or exists(atom_mask)
 
@@ -3694,26 +3697,6 @@ class Alphafold3(Module):
             if exists(atom_mask):
                 sampled_atom_pos = einx.where('b m, b m c, -> b m c', atom_mask, sampled_atom_pos, 0.)
 
-            if not exists(output_atompos_indices):
-                return sampled_atom_pos
-
-            # in the case the atoms are passed in not ordered canonically
-
-            order_mask = output_atompos_indices >= 0   # -1 is padding, which means do not order (metal ions, ligands, or entire row if None was passed in)
-
-            output_atompos_indices = einx.where(
-                'b m, b m, m -> b m',
-                order_mask,
-                output_atompos_indices,
-                torch.arange(atom_seq_len, device = self.device)
-            )
-
-            sampled_atom_pos = einx.get_at(
-                'b [m] 3, b rm -> b rm 3',
-                sampled_atom_pos,
-                output_atompos_indices
-            )
-
             return sampled_atom_pos
 
         # if being forced to return loss, but do not have sufficient information to return losses, just return 0
@@ -3736,9 +3719,8 @@ class Alphafold3(Module):
 
         # distogram head
 
-        if not exists(distance_labels) and atom_pos_given and exists(molecule_atom_indices):
-
-            molecule_pos = einx.get_at('b [m] c, b n -> b n c', atom_pos, molecule_atom_indices)
+        if not exists(distance_labels) and atom_pos_given and exists(distogram_atom_indices):
+            molecule_pos = einx.get_at('b [m] c, b n -> b n c', atom_pos, distogram_atom_indices)
             molecule_dist = torch.cdist(molecule_pos, molecule_pos, p = 2)
             dist_from_dist_bins = einx.subtract('b m dist, dist_bins -> b m dist dist_bins', molecule_dist, self.distance_bins).abs()
             distance_labels = dist_from_dist_bins.argmin(dim = -1)
@@ -3774,6 +3756,7 @@ class Alphafold3(Module):
                     relative_position_encoding,
                     additional_molecule_feats,
                     is_molecule_types,
+                    distogram_atom_indices,
                     molecule_atom_indices,
                     molecule_atom_lens,
                     pae_labels,
@@ -3799,6 +3782,7 @@ class Alphafold3(Module):
                         relative_position_encoding,
                         additional_molecule_feats,
                         is_molecule_types,
+                        distogram_atom_indices,
                         molecule_atom_indices,
                         molecule_atom_lens,
                         pae_labels,
@@ -3859,7 +3843,7 @@ class Alphafold3(Module):
         should_call_confidence_head = True
         return_pae_logits = exists(frame_indices)
 
-        if calc_diffusion_loss and should_call_confidence_head:
+        if calc_diffusion_loss and should_call_confidence_head and exists(molecule_atom_indices):
 
             # rollout
 
